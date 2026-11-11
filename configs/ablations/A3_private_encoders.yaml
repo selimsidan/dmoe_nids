@@ -1,0 +1,15 @@
+condition: A3
+display_name: Private encoders
+role: ablation
+description: >
+  Each expert owns a private 47-128-64 encoder (same shape as M's shared
+  encoder) and the gate uses a separate encoder of the same shape. All five
+  encoders start from M's Stage-A weights of the same seed; the private
+  encoders then train with their heads in Stage B. Stage C is as in M.
+  Not capacity matched: 80,020 parameters, about 3.6 x M.
+expected_total_parameters: 80020
+overrides:
+  architecture: moe_dataset_private_encoders_class_conditional
+  model:
+    gate_encoder: {kind: mlp, hidden_dims: [128], activation: relu, dropout: 0.2}
+    private_encoder: {kind: mlp, hidden_dims: [128], activation: relu, dropout: 0.2}

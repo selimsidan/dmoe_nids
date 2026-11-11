@@ -1,0 +1,13 @@
+# Install once with: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.9.1
+    hooks:
+      - id: nbstripout
+  - repo: local
+    hooks:
+      - id: repo-hygiene
+        name: repository hygiene (tokens, personal paths, emails, em dashes)
+        entry: python scripts/check_repo_hygiene.py
+        language: system
+        pass_filenames: true

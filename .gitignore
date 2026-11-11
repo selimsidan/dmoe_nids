@@ -1,0 +1,20 @@
+# data, generated outputs and scratch never enter the repository
+# (anchored to the root: src/dmoe/data/ is source code and must stay tracked)
+/data/
+/outputs/
+/scratch/
+*.npz
+*.npy
+*.safetensors
+*.pt
+*.log
+.ipynb_checkpoints/
+.env
+*.pem
+*.key
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.DS_Store

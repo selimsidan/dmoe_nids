@@ -1,0 +1,12 @@
+condition: B1
+display_name: Generic MoE
+role: baseline
+description: >
+  Same architecture and parameter count as M, but Stage B trains each expert
+  on a pooled random row stream (sized like the datasets) with no dataset
+  ownership. Reuses M's Stage-A encoder of the same seed.
+expected_total_parameters: 22420
+overrides:
+  architecture: moe_basic_class_conditional
+  training:
+    stage_b: {warmstart_mode: generic_pooled}

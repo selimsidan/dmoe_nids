@@ -1,0 +1,141 @@
+# Settings shared by every condition. A condition file (configs/method,
+# configs/baselines, configs/ablations) overrides only what differs from the
+# dataset-expert MoE (condition M). Seeds, the split policy and the stage
+# dependencies live in configs/campaign.yaml.
+
+data:
+  active_datasets: [NF-UNSW-NB15-v3, NF-ToN-IoT-v3, NF-BoT-IoT-v3, NF-CICIDS2018-v3]
+  expected_features: 47
+  expected_classes: 22
+  # Canonical attack classes that may appear after label mapping. The task
+  # vocabulary is Benign plus the classes actually present in the active datasets.
+  active_classes:
+    - Analysis
+    - Backdoor
+    - Bot
+    - BruteForce
+    - DDoS
+    - DoS
+    - Exploits
+    - Fuzzers
+    - Generic
+    - Infiltration
+    - Injection
+    - MITM
+    - Password
+    - Ransomware
+    - Reconnaissance
+    - Scanning
+    - Shellcode
+    - Theft
+    - WebAttacks
+    - Worms
+    - XSS
+  # Raw "Attack" value -> canonical class, per dataset. Benign is matched
+  # case-insensitively. Any other unmapped raw label is an error.
+  label_mapping:
+    NF-UNSW-NB15-v3:
+      Exploits: Exploits
+      Fuzzers: Fuzzers
+      Generic: Generic
+      Reconnaissance: Reconnaissance
+      DoS: DoS
+      Backdoor: Backdoor
+      Shellcode: Shellcode
+      Analysis: Analysis
+      Worms: Worms
+    NF-ToN-IoT-v3:
+      Backdoor: Backdoor
+      dos: DoS
+      ddos: DDoS
+      injection: Injection
+      mitm: MITM
+      password: Password
+      ransomware: Ransomware
+      scanning: Scanning
+      xss: XSS
+    NF-BoT-IoT-v3:
+      DoS: DoS
+      DDoS: DDoS
+      Reconnaissance: Reconnaissance
+      Theft: Theft
+    NF-CICIDS2018-v3:
+      DDOS_attack-HOIC: DDoS
+      DDoS_attacks-LOIC-HTTP: DDoS
+      DDOS_attack-LOIC-UDP: DDoS
+      DoS_attacks-Hulk: DoS
+      DoS_attacks-GoldenEye: DoS
+      DoS_attacks-Slowloris: DoS
+      DoS_attacks-SlowHTTPTest: DoS
+      Bot: Bot
+      FTP-BruteForce: BruteForce
+      SSH-Bruteforce: BruteForce
+      Infilteration: Infiltration
+      Brute_Force_-Web: WebAttacks
+      Brute_Force_-XSS: WebAttacks
+      SQL_Injection: WebAttacks
+  # Stratified per class within each dataset.
+  split:
+    train_frac: 0.7
+    val_frac: 0.15
+    test_frac: 0.15
+    min_class_count: 3
+  chunk_rows: 200000
+  stage_to_scratch: true
+  # Names used in tables and figures; registry keys are unchanged.
+  display_names:
+    NF-UNSW-NB15-v3: NF-UNSW-NB15-v3
+    NF-ToN-IoT-v3: NF-ToN-IoT-v3
+    NF-BoT-IoT-v3: NF-BoT-IoT-v3
+    NF-CICIDS2018-v3: NF-CSE-CIC-IDS2018-v3
+
+model:
+  latent_dim: 64
+  encoder: {kind: mlp, hidden_dims: [128], activation: relu, dropout: 0.2}
+  expert: {hidden_dims: [], dropout: 0.2}
+  gate: {hidden_dims: [32], routing: dense}
+
+load_balance:
+  lambda_balance: 0.1
+
+training:
+  device: auto            # auto | cuda | cpu
+  deterministic: true
+  batch_size: 512
+  epochs_a: 30
+  epochs_b: 10
+  epochs_c: 30
+  lr: 0.001
+  weight_decay: 0.0
+  selection_mode: best_val          # Stage C keeps the best validation macro-F1 epoch
+  early_stopping_patience: 5
+  stage_c_unfreeze: none            # encoders stay frozen in Stage C
+  representation:
+    objective: balanced_supcon      # ce | balanced_supcon
+    sampling: legacy
+    class_weighting: legacy         # sqrt inverse-frequency CE weights
+    weight: 0.2
+    temperature: 0.1
+  stage_a: {optimizer: {lr: 0.001, weight_decay: 0.0}}
+  stage_b: {warmstart_mode: dataset, optimizer: {lr: 0.001, weight_decay: 0.0}}
+  stage_c:
+    gate_supervision: none          # none | damex
+    expert_update_policy: all       # all | assigned_only
+    freeze_experts: true
+    lambda_expert_anchor: 0.0
+    lambda_reliability: 0.0001
+    optimizer: {lr: 0.001, weight_decay: 0.0}
+  shuffle_block_rows: 65536
+  shuffle_buffer_blocks: 8
+  validation_chunk_rows: 262144
+  progress_every_rows: 1000000
+  force_restart: false
+
+evaluation:
+  prediction_chunk_rows: 262144
+  # ROC-AUC and PR-AUC are computed from 4096-bin score histograms, which
+  # bounds memory on tens of millions of rows. Output files name the method.
+  roc_auc_bins: 4096
+
+hub:
+  repo_id: null   # Hugging Face repository for bundles, set at release time

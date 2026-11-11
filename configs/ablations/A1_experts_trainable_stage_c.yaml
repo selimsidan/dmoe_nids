@@ -1,0 +1,11 @@
+condition: A1
+display_name: Experts trainable in Stage C
+role: ablation
+description: >
+  M with the experts unfrozen in Stage C (the encoder stays frozen). Reuses
+  M's Stage A and Stage B of the same seed, so only Stage C differs.
+expected_total_parameters: 22420
+overrides:
+  architecture: moe_dataset_class_conditional
+  training:
+    stage_c: {freeze_experts: false}

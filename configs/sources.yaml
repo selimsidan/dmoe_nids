@@ -1,0 +1,41 @@
+# Where to obtain each dataset. The data are not redistributed by this
+# repository. page_url: the official download page; direct_url: a direct
+# file link that scripts/download_data.py can fetch (null: manual download).
+# Unknown values stay null or TODO until confirmed; never guess a URL.
+# The page URLs come from the publisher's BagIt package (FurtherInformation.txt,
+# University of Queensland eSpace); licensing details are on those pages.
+release:
+  name: NetFlow v3 (NF-v3) NIDS datasets
+  paper: "TODO: full reference of the NF-v3 paper (arXiv:2503.04404)"
+  arxiv: "2503.04404"
+  publisher: University of Queensland (UQ eSpace)
+  collection_handle: https://hdl.handle.net/102.100.100/602564
+datasets:
+  NF-UNSW-NB15-v3:
+    page_url: https://espace.library.uq.edu.au/view/UQ:6e0eda1
+    direct_url: null
+    archive_member: null  # path of the CSV inside the downloaded archive, if any
+    original_dataset: UNSW-NB15
+    original_citation: "TODO: UNSW-NB15 reference (Moustafa and Slay, 2015)"
+    license: "TODO"
+  NF-ToN-IoT-v3:
+    page_url: https://espace.library.uq.edu.au/view/UQ:44d7c5e
+    direct_url: null
+    archive_member: null
+    original_dataset: ToN-IoT
+    original_citation: "TODO: ToN-IoT reference"
+    license: "TODO"
+  NF-BoT-IoT-v3:
+    page_url: https://espace.library.uq.edu.au/view/UQ:73c4ebc
+    direct_url: null
+    archive_member: null
+    original_dataset: BoT-IoT
+    original_citation: "TODO: BoT-IoT reference (Koroniotis et al., 2019)"
+    license: "TODO"
+  NF-CICIDS2018-v3:
+    page_url: https://espace.library.uq.edu.au/view/UQ:ece9b83
+    direct_url: null
+    archive_member: null
+    original_dataset: CSE-CIC-IDS2018
+    original_citation: "TODO: CSE-CIC-IDS2018 reference (Sharafaldin et al., 2018)"
+    license: "TODO"

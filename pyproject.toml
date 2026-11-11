@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmoe"
+version = "0.1.0"
+description = "Dataset-expert mixture of experts for network intrusion detection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "scipy",
+  "torch",
+  "PyYAML",
+  "matplotlib",
+  "safetensors",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pre-commit", "nbstripout"]
+hub = ["huggingface_hub"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.urls]
+Repository = "https://github.com/selimsidan/dmoe_nids"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

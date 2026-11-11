@@ -1,0 +1,21 @@
+condition: B3
+display_name: Hard-routing two-stage baseline
+role: baseline
+description: >
+  Two-stage pipeline on M's Stage-A encoder and Stage-B experts: a router
+  trained only to predict the dataset of origin (dataset-ID cross-entropy,
+  no task gradient, no load balancing) dispatches every row to exactly one
+  expert by argmax. No class reliability matrix.
+expected_total_parameters: 22332
+overrides:
+  architecture: moe_dataset_damex
+  model:
+    gate: {hidden_dims: [32], routing: top1}
+  load_balance: {lambda_balance: 0.0}
+  training:
+    stage_c:
+      gate_supervision: damex
+      lambda_dataset_aux_damex: 1.0
+      expert_update_policy: assigned_only
+      freeze_experts: true
+      lambda_expert_anchor: 0.0

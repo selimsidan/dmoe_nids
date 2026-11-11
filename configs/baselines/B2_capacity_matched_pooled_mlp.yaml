@@ -1,0 +1,20 @@
+condition: B2
+display_name: Capacity-matched pooled MLP
+role: baseline
+description: >
+  One dataset-blind classifier: M's frozen Stage-A encoder plus a two-hidden-
+  layer head (64-61-48-22) whose widths are chosen so the total parameter
+  count matches M. The head is trained with the same pooled exposure as M's
+  experts (Stage B) and then on all rows (Stage C).
+expected_total_parameters: 22419
+overrides:
+  architecture: matched_dense
+  model:
+    dense_match:
+      axis: total_params
+      reference_routing: dense
+      extra_reference_parameters: 88
+      tolerance: 0.005
+      max_width: 2048
+  training:
+    baseline: {encoder_init: stage_a, stage_b_warmstart: pooled_matched_exposure}

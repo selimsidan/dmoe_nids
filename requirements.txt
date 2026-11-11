@@ -1,0 +1,15 @@
+# Exact versions the code and tests were verified with (Python 3.13).
+# On Colab, notebooks run `pip install -e .`, which keeps Colab's own torch
+# build; the versions actually used are recorded in every run manifest.
+numpy==2.5.1
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.18.0
+torch==2.13.0
+PyYAML==6.0.3
+matplotlib==3.11.2
+safetensors==0.8.0
+huggingface_hub==2.4.0
+pytest==9.1.1
+nbstripout==0.9.1
+pre-commit==4.7.0

@@ -1,0 +1,17 @@
+# TODO before release: replace the placeholder author(s), add the paper
+# reference under preferred-citation, and set version/date to the release tag.
+cff-version: 1.2.0
+message: "If you use this software, please cite it (and the paper, once published) as below."
+title: "dmoe_nids: dataset-expert mixture of experts for network intrusion detection"
+type: software
+authors:
+  - family-names: "TODO"
+    given-names: "TODO"
+repository-code: "https://github.com/selimsidan/dmoe_nids"
+license: MIT
+version: "0.1.0"
+keywords:
+  - network intrusion detection
+  - mixture of experts
+  - NetFlow
+  - NF-v3

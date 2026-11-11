@@ -1,0 +1,11 @@
+condition: M
+display_name: Dataset-expert MoE
+role: method
+description: >
+  Shared 47-128-64 encoder (Stage A, CE + 0.2 balanced SupCon), four linear
+  64-22 experts each warm-started on its own dataset (Stage B), and a
+  64-32-4 gate with a 4 x 22 class reliability matrix trained on the task
+  loss with encoder and experts frozen (Stage C).
+expected_total_parameters: 22420
+overrides:
+  architecture: moe_dataset_class_conditional

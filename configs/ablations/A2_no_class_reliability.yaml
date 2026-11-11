@@ -1,0 +1,9 @@
+condition: A2
+display_name: No class-conditional reliability
+role: ablation
+description: >
+  M without the 4 x 22 class reliability matrix: a plain soft mixture whose
+  gate weights are shared by all classes. Reuses M's Stage A and Stage B.
+expected_total_parameters: 22332
+overrides:
+  architecture: moe_dataset_soft

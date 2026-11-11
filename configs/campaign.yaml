@@ -1,0 +1,38 @@
+# The paper campaign: 7 conditions x the seeds below. Units run seed-major
+# and, within a seed, in the order listed, so M's Stage A/B exist before the
+# conditions that reuse them. Any seed list works on the command line
+# (--seeds 3 4); completed units are skipped.
+seeds: [0, 1, 2, 3, 4]
+
+# fixed: one split (split_seed) for every condition and seed; the training
+#        seed then changes only initialization, batch order and dropout.
+# per_seed: the split seed equals the training seed.
+split:
+  mode: fixed
+  split_seed: 0
+
+recommended_seed_rule: max_val_macro_f1   # ties go to the lower seed; validation only
+aggregation_seed: 0
+bootstrap_resamples: 1000
+
+conditions:
+  - id: M
+    config: method/M_dataset_expert_moe.yaml
+  - id: B1
+    config: baselines/B1_generic_moe.yaml
+    depends_on: {stage_a: M}
+  - id: B2
+    config: baselines/B2_capacity_matched_pooled_mlp.yaml
+    depends_on: {stage_a: M}
+  - id: B3
+    config: baselines/B3_hard_routing_two_stage.yaml
+    depends_on: {stage_a: M, stage_b: M}
+  - id: A1
+    config: ablations/A1_experts_trainable_stage_c.yaml
+    depends_on: {stage_a: M, stage_b: M}
+  - id: A2
+    config: ablations/A2_no_class_reliability.yaml
+    depends_on: {stage_a: M, stage_b: M}
+  - id: A3
+    config: ablations/A3_private_encoders.yaml
+    depends_on: {stage_a: M}
