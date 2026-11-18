@@ -170,8 +170,11 @@ def plot_seed_training_history(
         if selected_epoch is not None:
             for axis in axes:
                 axis.axvline(selected_epoch, color="black", linestyle=":", label="selected epoch")
+        boosting = set(stage_c["encoder_role"]) == {"lightgbm"}  # B4: x is the boosting round
         for axis in axes:
-            axis.set_xlabel("Epoch"); axis.grid(alpha=0.25); axis.legend(fontsize=8)
+            axis.set_xlabel("Boosting round" if boosting else "Epoch"); axis.grid(alpha=0.25)
+            if axis.get_legend_handles_labels()[0]:
+                axis.legend(fontsize=8)
         written.append(_save_figure(fig, output_dir, "Stage_C_Learning_Curves.png"))
     return written
 

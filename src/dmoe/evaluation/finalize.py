@@ -29,7 +29,8 @@ from ..training.checkpoint import (
     BASELINE_MODEL_FILE, BASELINE_STAGE_B_FILE, STAGE_C_FILE,
     resolve_stage_a_path, resolve_stage_b_path, stage_file,
 )
-from ..training.config import config_hash
+from ..training.config import MOE_ARCHITECTURES, config_hash
+from ..training.lightgbm_baseline import MODEL_FILE as LIGHTGBM_MODEL_FILE
 from ..training.reproducibility import environment_info
 from ..training.training_history import TRAINING_HISTORY_FILE, read_training_history, plot_seed_training_history
 from .predictions import PREDICTION_FILES, predict_split
@@ -55,6 +56,7 @@ def _checkpoint_records(config: dict, output_root: str) -> dict:
         "stage_c": stage_file(checkpoint_dir, "C", STAGE_C_FILE),
         "baseline_stage_b": stage_file(checkpoint_dir, "B", BASELINE_STAGE_B_FILE),
         "baseline": stage_file(checkpoint_dir, "C", BASELINE_MODEL_FILE),
+        "lightgbm": stage_file(checkpoint_dir, "C", LIGHTGBM_MODEL_FILE),
     }
     records = {}
     for key, path in candidates.items():
@@ -70,13 +72,27 @@ def _checkpoint_records(config: dict, output_root: str) -> dict:
 
 def _selected_epochs(config: dict) -> dict:
     summary_path = os.path.join(config["training"]["checkpoint_dir"], "stage_c_training_summary.json")
-    selected = {"stage_a": config["training"].get("epochs_a"), "stage_b": config["training"].get("epochs_b")}
+    if config["architecture"] == "pooled_lightgbm":
+        selected = {}
+    else:
+        selected = {"stage_a": config["training"].get("epochs_a"), "stage_b": config["training"].get("epochs_b")}
     if os.path.isfile(summary_path):
         with open(summary_path) as handle:
             value = json.load(handle)
         selected["stage_c"] = value.get("best_epoch")
         selected["stage_c_best_validation_macro_f1"] = value.get("best_validation_macro_f1")
+        if config["architecture"] == "pooled_lightgbm":
+            selected = {"lightgbm_best_round": value.get("best_epoch"),
+                        "lightgbm_best_validation_macro_f1": value.get("best_validation_macro_f1")}
     return selected
+
+
+def _int_or_none(value):
+    """Parameter counts are integers; B4 (trees) has none."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def write_manifest(path: str, manifest: dict) -> None:
@@ -135,7 +151,9 @@ def finalize_unit(model, context, config: dict, contract: dict, *, training_seco
 
     # 3. Training history and learning curves.
     history = read_training_history(config["training"]["checkpoint_dir"])
-    stage_dirs = {os.path.dirname(resolve_stage_a_path(config)), os.path.dirname(resolve_stage_b_path(config))}
+    # Reused stages live in the parent run's checkpoints/stage_<X>/ folder; its history is one level up.
+    stage_dirs = {os.path.dirname(os.path.dirname(resolve_stage_a_path(config))),
+                  os.path.dirname(os.path.dirname(resolve_stage_b_path(config)))}
     shared = [read_training_history(d) for d in stage_dirs if d != config["training"]["checkpoint_dir"]]
     for frame in shared:
         if not frame.empty:
@@ -145,7 +163,8 @@ def finalize_unit(model, context, config: dict, contract: dict, *, training_seco
     history.to_csv(history_path + ".tmp", index=False)
     os.replace(history_path + ".tmp", history_path)
     figure_paths = plot_seed_training_history(
-        history, os.path.join(run_dir, "figures"), selected_epoch=_selected_epochs(config).get("stage_c"),
+        history, os.path.join(run_dir, "figures"),
+        selected_epoch=_selected_epochs(config).get("stage_c", _selected_epochs(config).get("lightgbm_best_round")),
     ) if not history.empty else []
 
     # 4. Bundle export.
@@ -165,14 +184,14 @@ def finalize_unit(model, context, config: dict, contract: dict, *, training_seco
         "selected_epochs": _selected_epochs(config),
         "val_macro_f1": results["val"]["macro_f1"],
         "test_macro_f1": results["test"]["macro_f1"],
-        "total_parameters": int(row["total_parameters"]),
+        "total_parameters": _int_or_none(row["total_parameters"]),
         "config_hash": config_hash(config),
         "environment": environment,
         "exported_utc": datetime.now(timezone.utc).isoformat(),
     }
     bundle_hashes = export_bundle(
         model, config, context, bundle_dir, metadata=bundle_metadata,
-        include_stages=config["architecture"] != "matched_dense" and "A" in config["training"]["stages"],
+        include_stages=config["architecture"] in MOE_ARCHITECTURES and "A" in config["training"]["stages"],
     )
 
     # 5. Split description (shared by every run; written once).
@@ -196,8 +215,13 @@ def finalize_unit(model, context, config: dict, contract: dict, *, training_seco
         "config_hash": config_hash(config),
         "contract_signature": contract.get("signature"),
         "expected_total_parameters": config.get("condition", {}).get("expected_total_parameters"),
-        "total_parameters": int(row["total_parameters"]),
-        "trainable_parameters_stage_c": int(row["trainable_parameters"]),
+        "total_parameters": _int_or_none(row["total_parameters"]),
+        "trainable_parameters_stage_c": _int_or_none(row["trainable_parameters"]),
+        "model_size": (
+            {key: row[key] for key in ("lightgbm_trees", "lightgbm_total_leaves", "lightgbm_best_round",
+                                       "lightgbm_model_bytes")}
+            if config["architecture"] == "pooled_lightgbm" else None
+        ),
         "stages_trained": list(config["training"]["stages"]),
         "depends_on": dict(run["depends_on"]),
         "split": bundle_metadata["split"],

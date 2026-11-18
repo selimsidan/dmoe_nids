@@ -67,5 +67,12 @@ def environment_info() -> dict:
         "cuda": torch.version.cuda,
         "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "cpu_count": os.cpu_count(),
     }
+    try:
+        import lightgbm
+
+        info["lightgbm"] = lightgbm.__version__
+    except ImportError:
+        info["lightgbm"] = None
     return info

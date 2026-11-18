@@ -18,6 +18,7 @@ dependencies = [
   "PyYAML",
   "matplotlib",
   "safetensors",
+  "lightgbm",
 ]
 
 [project.optional-dependencies]

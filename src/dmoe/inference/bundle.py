@@ -14,13 +14,17 @@ A bundle directory holds:
   epochs, validation and test macro-F1, parameter count, commit, library
   versions, and the SHA-256 of every other file.
 
-M additionally ships ``stage_a_encoder.safetensors`` and
-``stage_b_expert_bank.safetensors`` so the baselines and ablations can be
+M (and A1) additionally ship ``stage_a_encoder.safetensors`` and
+``stage_b_expert_bank.safetensors`` so the conditions that reuse them can be
 retrained from its checkpoints.
+
+B4 (LightGBM) ships ``lightgbm_model.txt`` (LightGBM's text format) instead of
+``model.safetensors``; everything else is the same.
 
 ``load_bundle`` verifies the file hashes and asserts that ``model.forward``
 takes exactly one argument (the features), so no dataset identity can reach
-the model at prediction time.
+the model at prediction time. For B4 it also asserts that the booster's
+features are exactly the 47 contract columns.
 """
 from __future__ import annotations
 
@@ -47,6 +51,7 @@ LABELS_FILE = "labels.json"
 METADATA_FILE = "metadata.json"
 STAGE_A_BUNDLE_FILE = "stage_a_encoder.safetensors"
 STAGE_B_BUNDLE_FILE = "stage_b_expert_bank.safetensors"
+LIGHTGBM_BUNDLE_FILE = "lightgbm_model.txt"
 FORMAT_VERSION = 1
 
 
@@ -140,7 +145,16 @@ def export_bundle(
         "benign_label": "Benign",
         "raw_label_map": {name: config["data"]["label_mapping"][name] for name in data.active_datasets},
     }
-    save_file(_state_for_safetensors(model.state_dict()), os.path.join(bundle_dir, MODEL_FILE))
+    if config["architecture"] == "pooled_lightgbm":
+        model_config["lightgbm"] = {
+            "chosen": (getattr(model, "lightgbm_info", {}).get("chosen") or {}).get("chosen"),
+            "best_round": model.best_round(),
+            "trees": model.num_trees(),
+        }
+        with open(os.path.join(bundle_dir, LIGHTGBM_BUNDLE_FILE), "w") as handle:
+            handle.write(model.model_text)
+    else:
+        save_file(_state_for_safetensors(model.state_dict()), os.path.join(bundle_dir, MODEL_FILE))
     _write_json(model_config, os.path.join(bundle_dir, CONFIG_FILE))
     _write_json(preprocessing, os.path.join(bundle_dir, PREPROCESSING_FILE))
     _write_json(labels, os.path.join(bundle_dir, LABELS_FILE))
@@ -255,10 +269,18 @@ def load_bundle(path: str, device: str | torch.device = "cpu", *, verify: bool =
         raise ValueError("bundle preprocessing feature count does not match the model input")
     if labels["class_names"] != config["class_names"]:
         raise ValueError("bundle labels.json and config.json disagree on the class order")
-    model = build_model_for_bundle(config)
-    assert_dataset_blind_signature(model)
-    state = load_file(os.path.join(path, MODEL_FILE))
-    model.load_state_dict(state, strict=True)
     device = torch.device(device)
-    model.to(device).eval()
+    if config["architecture"] == "pooled_lightgbm":
+        from ..training.lightgbm_baseline import LightGBMModel
+
+        with open(os.path.join(path, LIGHTGBM_BUNDLE_FILE)) as handle:
+            model = LightGBMModel(handle.read(), config["class_names"], preprocessing["feature_columns"])
+        assert_dataset_blind_signature(model)
+        device = torch.device("cpu")
+    else:
+        model = build_model_for_bundle(config)
+        assert_dataset_blind_signature(model)
+        state = load_file(os.path.join(path, MODEL_FILE))
+        model.load_state_dict(state, strict=True)
+        model.to(device).eval()
     return Bundle(path=path, model=model, config=config, preprocessing=preprocessing, labels=labels, metadata=metadata, device=device)

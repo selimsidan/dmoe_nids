@@ -45,6 +45,20 @@ SUMMARY_METRICS = [
 PER_CLASS_METRICS = ["f1", "precision", "recall", "roc_auc_ovr", "pr_auc_ovr"]
 
 
+def _size_notes(runs) -> dict[str, str]:
+    """For models without a parameter count (B4 trees): mean trees and leaves over seeds."""
+    sizes: dict[str, list[dict]] = {}
+    for run in runs:
+        size = run.manifest.get("model_size") or {}
+        if size.get("lightgbm_trees") is not None:
+            sizes.setdefault(run.condition, []).append(size)
+    return {
+        condition: (f"n/a ({np.mean([v['lightgbm_trees'] for v in values]):,.0f} trees, "
+                    f"{np.mean([v['lightgbm_total_leaves'] for v in values]):,.0f} leaves; mean of {len(values)} seeds)")
+        for condition, values in sizes.items()
+    }
+
+
 @dataclass
 class RunInfo:
     condition: str
@@ -317,7 +331,9 @@ def cross_seed_curves(runs: list[RunInfo], output_dir: str) -> None:
         for run in runs:
             path = os.path.join(run.run_dir, "Training_History.csv")
             if run.condition == condition and os.path.isfile(path):
-                frames.append(pd.read_csv(path))
+                frame = pd.read_csv(path)
+                if not frame.empty:
+                    frames.append(frame)
         if not frames:
             continue
         history = pd.concat(frames, ignore_index=True)
@@ -366,6 +382,7 @@ def aggregate(
     tables["Recommended_Seeds"] = recommended_seeds(runs)
     params = {r.condition: r.manifest.get("total_parameters") for r in runs}
     tables["Summary_Overall"].insert(1, "total_parameters", tables["Summary_Overall"]["condition"].map(params))
+    tables["Summary_Overall"].insert(2, "model_size_note", tables["Summary_Overall"]["condition"].map(_size_notes(runs)))
     for name, frame in tables.items():
         _atomic_csv(frame, os.path.join(out, f"{name}.csv"))
     display = {r.condition: r.manifest.get("display_name") or r.condition for r in runs}

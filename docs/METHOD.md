@@ -56,12 +56,8 @@ highest mixed probability is predicted.
 
 ## Baselines
 
-All baselines start from M's Stage-A encoder of the same seed.
+B2 and B3 start from M's Stage-A encoder of the same seed; B4 uses nothing from M.
 
-* **B1 generic MoE (22,420).** Same architecture, gate and reliability matrix
-  as M, but Stage B trains each expert on a random stream of pooled rows whose
-  length equals the i-th largest dataset (the same exposure M's experts get),
-  with pooled class weights. No expert is ever assigned a dataset.
 * **B2 capacity-matched pooled MLP (22,419).** One classifier: M's frozen
   encoder plus a head 64-61-48-22. The two widths are chosen by a deterministic
   search for the total parameter count closest to M's. Stage B trains the
@@ -72,14 +68,73 @@ All baselines start from M's Stage-A encoder of the same seed.
   dataset of origin (dataset-ID cross-entropy, no task-loss gradient, no load
   balancing). At prediction every row goes to exactly one expert, the router's
   argmax.
+* **B4 pooled LightGBM (trees; no parameter count).** One gradient-boosted
+  tree model (LightGBM, multiclass, CPU) trained on all pooled training rows,
+  dataset-blind. Its size is reported as trees and leaves next to its results.
+
+### B4 fairness contract
+
+B4 gets nothing M does not get. Anything not listed is not used.
+
+| Aspect | M | B4 |
+|---|---|---|
+| Training rows | all pooled training rows, natural class distribution | the same rows |
+| Inputs | the 47 prepared features (median imputed, standardized), no dataset ID | the same prepared feature arrays, no dataset ID |
+| Class weighting | square-root inverse frequency, normalized to mean 1, on the pooled training rows | the same weights from the same function, as per-row sample weights |
+| Resampling | none | none |
+| Model selection | best validation macro-F1 epoch (Stage C, patience 5) | best validation macro-F1 boosting round (checked every 10 rounds, patience 50 rounds, at most 2,000 rounds) |
+| Stochastic regularization | dropout 0.2 | row and feature subsampling 0.8 (fixed, not tuned) |
+| Tuning on validation | settled in development (see below) | a grid of 4 configurations, once |
+| Prediction | argmax of class probabilities | argmax of class probabilities |
+
+Not allowed for B4: dataset ID or anything derived from it, feature
+engineering, oversampling or undersampling, `is_unbalance` or `class_weight`
+beyond the sample weights above, focal or custom losses, DART, per-class
+thresholds, probability calibration. The code rejects the corresponding
+LightGBM settings.
+
+Fixed LightGBM settings: `objective: multiclass`, `max_bin` 255,
+`feature_fraction` 0.8, `bagging_fraction` 0.8, `bagging_freq` 1,
+`deterministic: true`, `force_row_wise: true`, all CPU cores; the subsampling
+seeds are derived from the campaign seed (this is what makes B4's seeds
+differ). Everything else is at LightGBM's defaults.
+
+Tuning protocol (pre-registered in `configs/baselines/B4_pooled_lightgbm.yaml`):
+
+* Grid: `num_leaves` in {63, 255} x `learning_rate` in {0.05, 0.1}, trained
+  once with seed 0 on the fixed split. The configuration with the highest
+  validation macro-F1 is used unchanged for every seed (ties go to the earlier
+  configuration). Test data is never read during tuning.
+* Data for the grid: all training rows, unless a timing pilot (20 rounds of the
+  largest configuration) projects the whole grid above 24 hours; then the grid
+  runs on a fixed uniform 10% sample of the training rows (natural class
+  distribution, weights recomputed with the same function). The decision and
+  its measurements are recorded in `runs/B4/tuning/data_mode.json`. The seed
+  runs always use all training rows.
+* If the chosen configuration's best round lies within the last 50 rounds of
+  the 2,000-round cap, the seed runs use a 4,000-round cap instead, so training
+  length never limits B4.
+* Every B4 run trains in chunks of 200 rounds, each continued from the saved
+  model, so a run that is interrupted and resumed follows exactly the same
+  path as an uninterrupted one.
 
 ## Ablations
 
-* **A1 experts trainable in Stage C (22,420).** M with `freeze_experts: false`
-  in Stage C; the encoder stays frozen. Reuses M's Stage A and B.
-* **A2 no class-conditional reliability (22,332).** A plain soft mixture: the
-  same gate weights for every class, no R and no R penalty. Reuses M's Stage
-  A and B.
+* **A1 no contrastive loss (22,420).** M with a cross-entropy-only Stage A:
+  the balanced supervised contrastive term is dropped; encoder, probe, class
+  weights, 30 epochs, optimizer and batch order are as in M (the contrastive
+  loss has no parameters, so A1 and M start from identical weights). A1 trains
+  its own Stage A, B and C per seed (about one M run). Stage B and Stage C use
+  exactly M's hyperparameters (load-balance weight 0.1, reliability penalty
+  1e-4, epochs, patience, selection rule); they were not retuned for A1. This
+  choice was fixed before A1 was run.
+* **A2 no gating, uniform expert average (20,120).** M's Stage-A encoder and
+  M's four Stage-B experts of the same seed, combined with fixed equal weights:
+  `combined = (1/4) * sum_d softmax(expert_logits_d)`. No gate network, no
+  reliability matrix R, no Stage-C training and no validation-based
+  selection; this is M's mixture with the gate weights fixed at 1/4 and R = 0.
+  It is not capacity matched: M's gate (2,212) and R (88) are absent and
+  nothing is added elsewhere.
 * **A3 private encoders (80,020).** Each expert owns a full 47-128-64 encoder
   and the gate uses a separate encoder of the same shape. All five encoders
   start from M's Stage-A weights; in Stage B each private encoder trains
@@ -91,6 +146,7 @@ Expected readings, written before the final runs: TODO (author).
 * A1: TODO
 * A2: TODO
 * A3: TODO
+* B4: TODO
 
 ## Choices made on validation data in development
 
@@ -110,3 +166,5 @@ TODO (author): one sentence on the grid that was compared.
 * Across seeds: mean, SD and a t-based 95% interval; paired differences from
   M on common seeds; per seed, a paired bootstrap of the macro-F1 difference
   (1,000 resamples of test rows) and McNemar's test on per-row correctness.
+* B4 is evaluated by exactly the same code: its probabilities go into the same
+  per-row prediction files, tables, aggregation and significance tests.

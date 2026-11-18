@@ -135,8 +135,17 @@ def _peak_memory_bytes(device: torch.device) -> int | None:
         return None
 
 
-def model_outputs(model: torch.nn.Module, tensor: torch.Tensor) -> dict[str, torch.Tensor]:
+def model_device(model) -> torch.device:
+    """Device of a torch model; CPU for parameter-free and tree models (B4)."""
+    parameter = next(iter(model.parameters()), None)
+    return parameter.device if parameter is not None else torch.device("cpu")
+
+
+def model_outputs(model, tensor: torch.Tensor) -> dict[str, torch.Tensor]:
     """Forward one batch and normalize the output to probabilities, gate and expert logits."""
+    if hasattr(model, "predict_proba"):  # B4 (LightGBM): no gate, no experts
+        probabilities = model.predict_proba(tensor.detach().cpu().numpy())
+        return {"probabilities": torch.from_numpy(np.ascontiguousarray(probabilities))}
     output = model(tensor)
     if "combined_probs" in output:
         probabilities = output["combined_probs"]
@@ -250,7 +259,7 @@ def predict_rows(
 def predict_split(model: torch.nn.Module, context, split_name: str, config: dict) -> PredictionRecord:
     """Predict one split (``val`` or ``test``) of the prepared out-of-core data."""
     split = getattr(context.data, split_name)
-    device = next(model.parameters()).device
+    device = model_device(model)
     record = predict_rows(
         model, split.features, split.class_idx, split.dataset_idx,
         class_names=context.data.class_names,

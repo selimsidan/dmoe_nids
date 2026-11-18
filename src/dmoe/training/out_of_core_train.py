@@ -1,11 +1,12 @@
 """Stage A/B/C training on the disk-backed NF-v3 data with bounded memory.
 
-Stage A trains the shared encoder (probe CE + balanced SupCon) on all pooled
-training rows. Stage B freezes it and trains the experts: one expert per
-dataset on that dataset's rows (M), or generic experts on pooled rows (B1),
-or private encoder + head per dataset (A3). Stage C trains the gate (and the
-class reliability matrix, or the experts in A1) on all pooled rows and keeps
-the epoch with the best validation macro-F1.
+Stage A trains the shared encoder (probe CE + balanced SupCon; CE only for
+A1) on all pooled training rows. Stage B freezes it and trains the experts:
+one expert per dataset on that dataset's rows (M, A1), or a private encoder
++ head per dataset (A3). Stage C trains the gate (and the class reliability
+matrix) on all pooled rows and keeps the epoch with the best validation
+macro-F1. A2 has no Stage-C training: ``assemble_uniform_stage_c`` combines
+M's encoder and experts with fixed equal weights.
 
 Each stage reseeds torch with the training seed and draws its batch order
 from NumPy generators seeded by ``seed + offset``, so stages give identical
@@ -52,14 +53,12 @@ from .checkpoint import (
 from .config import NON_SCIENTIFIC_TRAINING_KEYS
 from .gate_supervision import gate_weights_for_task, lambda_dataset_aux
 from .model_utils import (
-    BASIC_MOE_ARCHITECTURES,
     PRIVATE_ENCODER_ARCHITECTURES,
     apply_stage_c_trainability,
     bank_kind_for_architecture,
     build_expert_bank,
     build_model,
     expert_forward_one,
-    expert_names_for_architecture,
     expert_train_params,
     initialize_private_expert_encoders,
 )
@@ -261,7 +260,7 @@ def pooled_budget_row_batches(
 
     The target controls only how many pooled rows are seen.  Dataset identity
     never participates in row selection, which makes this suitable for the
-    exposure-matched generic-MoE and pooled controls.
+    exposure-matched pooled control (B2).
     """
     if target_rows <= 0 or total_rows <= 0:
         return
@@ -527,17 +526,15 @@ def run_stage_b_ooc(config: dict, context: OutOfCoreContext):
     data = context.data; device = torch.device(config["training"]["device"])
     torch.manual_seed(config.get("seed", 0))
     bank_kind = bank_kind_for_architecture(config["architecture"])
-    expert_names = expert_names_for_architecture(config["architecture"], data.active_datasets)
+    expert_names = list(data.active_datasets)
     bank = build_expert_bank(
         bank_kind, expert_names, config["model"]["latent_dim"],
         len(data.class_names), config["model"], input_dim=data.train.features.shape[1],
     ).to(device)
     checkpoint_dir = config["training"]["checkpoint_dir"]
     warmstart_mode = config["training"].get("stage_b", {}).get("warmstart_mode", "dataset")
-    if warmstart_mode not in {"dataset", "generic_pooled"}:
-        raise ValueError("training.stage_b.warmstart_mode must be dataset or generic_pooled")
-    generic_pooled = warmstart_mode == "generic_pooled"
-    pooled_weights = None
+    if warmstart_mode != "dataset":
+        raise ValueError("training.stage_b.warmstart_mode must be dataset")
 
     primary_role = "gate_encoder" if bank_kind == "private_encoder" else "encoder"
     encoder = _frozen_encoder(config, context, device, primary_role)
@@ -558,34 +555,14 @@ def run_stage_b_ooc(config: dict, context: OutOfCoreContext):
         owned_examples_seen = int(progress.get("owned_examples_seen", 0))
     batch_size, block_rows, buffer_blocks = _settings(config)
     progress_every = int(config["training"].get("progress_every_rows", 1_000_000))
-    if generic_pooled:
-        exposure_budgets = sorted(
-            (
-                bounds.stop - bounds.start
-                for bounds in data.train.dataset_slices.values()
-            ),
-            reverse=True,
-        )
-        loop_names = expert_names
-        pooled_weights = _loss_weights(
-            data.train.class_idx, len(data.class_names), device
-        )
-    else:
-        exposure_budgets = []
-        loop_names = data.active_datasets
 
-    for dataset_i, name in enumerate(loop_names):
+    for dataset_i, name in enumerate(data.active_datasets):
         if dataset_i < resume_dataset:
             continue
-        if generic_pooled:
-            bounds = None
-            total_rows = int(exposure_budgets[dataset_i])
-            weights = pooled_weights
-        else:
-            bounds = data.train.dataset_slices[name]
-            total_rows = bounds.stop - bounds.start
-            local_labels = data.train.class_idx[bounds]
-            weights = _loss_weights(local_labels, len(data.class_names), device)
+        bounds = data.train.dataset_slices[name]
+        total_rows = bounds.stop - bounds.start
+        local_labels = data.train.class_idx[bounds]
+        weights = _loss_weights(local_labels, len(data.class_names), device)
         optimizer = _expert_optimizer(expert_train_params(bank, dataset_i), config)
         first_epoch = resume_epoch if dataset_i == resume_dataset else 0
         if dataset_i == resume_dataset and optimizer_state:
@@ -598,16 +575,9 @@ def run_stage_b_ooc(config: dict, context: OutOfCoreContext):
             report_progress = _progress_reporter(
                 f"Stage B/ooc:{name} epoch {epoch + 1}", total_rows, progress_every
             )
-            batches = (
-                pooled_budget_row_batches(
-                    len(data.train.class_idx), total_rows, rng,
-                    batch_size, block_rows, buffer_blocks,
-                )
-                if generic_pooled
-                else shuffled_row_batches(
-                    bounds.start, bounds.stop, rng,
-                    batch_size, block_rows, buffer_blocks,
-                )
+            batches = shuffled_row_batches(
+                bounds.start, bounds.stop, rng,
+                batch_size, block_rows, buffer_blocks,
             )
             for row_ids in batches:
                 features, labels, _ = _batch(data.train, row_ids, device)
@@ -667,15 +637,14 @@ def run_stage_b_ooc(config: dict, context: OutOfCoreContext):
             "epochs_completed": int(config["training"]["epochs_b"]),
             "wall_seconds": time.monotonic() - started,
             "selected_epoch": int(config["training"]["epochs_b"]),
-            "owned_examples_seen": 0 if generic_pooled else owned_examples_seen,
-            "pooled_examples_seen": owned_examples_seen if generic_pooled else 0,
+            "owned_examples_seen": owned_examples_seen,
+            "pooled_examples_seen": 0,
         },
     )
-    if not generic_pooled:
-        write_owned_expert_validation_ooc(
-            encoder, bank, context, config,
-            stage_file(checkpoint_dir, "B", "Validation_Expert_Owned_StageB.csv"),
-        )
+    write_owned_expert_validation_ooc(
+        encoder, bank, context, config,
+        stage_file(checkpoint_dir, "B", "Validation_Expert_Owned_StageB.csv"),
+    )
     clear_progress(checkpoint_dir, "B")
     return bank
 
@@ -935,11 +904,10 @@ def run_stage_c_ooc(config: dict, context: OutOfCoreContext):
         bank_kind, training_summary=summary,
     )
     write_validation_report_ooc(model, context, config)
-    if config["architecture"] not in BASIC_MOE_ARCHITECTURES:
-        write_owned_expert_validation_ooc(
-            model.encoder, model.expert_bank, context, config,
-            os.path.join(selection_dir(config), "Validation_Expert_Owned_StageC.csv"),
-        )
+    write_owned_expert_validation_ooc(
+        model.encoder, model.expert_bank, context, config,
+        os.path.join(selection_dir(config), "Validation_Expert_Owned_StageC.csv"),
+    )
     summary_path = os.path.join(checkpoint_dir, STAGE_C_SUMMARY_FILE)
     temporary = summary_path + ".tmp"
     with open(temporary, "w") as handle:
@@ -954,5 +922,37 @@ def run_stage_c_ooc(config: dict, context: OutOfCoreContext):
         )
     os.replace(temporary, summary_path)
     clear_progress(checkpoint_dir, "C")
+    model.training_summary = {"C": summary}
+    return model
+
+
+def assemble_uniform_stage_c(config: dict, context: OutOfCoreContext):
+    """A2: M's Stage-A encoder and Stage-B experts with fixed equal weights.
+
+    Nothing is trained and no epoch is selected; the assembled model is
+    written as the Stage-C checkpoint the rest of the pipeline expects.
+    """
+    data = context.data; device = torch.device(config["training"]["device"])
+    model = build_ooc_model(config, context, device)
+    model.eval()
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if trainable:
+        raise ValueError(f"the uniform-average model must have no trainable parameters, found {trainable}")
+    summary = {
+        "optimizer_steps": 0, "examples_seen": 0, "epochs_completed": 0,
+        "wall_seconds": 0.0, "selected_epoch": None,
+        "note": "no Stage-C training: fixed equal expert weights, no validation-based selection",
+    }
+    checkpoint_dir = config["training"]["checkpoint_dir"]
+    save_stage_c(
+        checkpoint_dir, model.state_dict(), data.class_names, data.active_datasets,
+        bank_kind_for_architecture(config["architecture"]), training_summary=summary,
+    )
+    summary_path = os.path.join(checkpoint_dir, STAGE_C_SUMMARY_FILE)
+    with open(summary_path + ".tmp", "w") as handle:
+        json.dump({"best_epoch": None, "best_validation_macro_f1": None, "selection_mode": "none",
+                   "training_summary": summary}, handle, indent=2, sort_keys=True)
+    os.replace(summary_path + ".tmp", summary_path)
+    print("[Stage C/uniform] assembled M's encoder and experts with equal weights; nothing trained", flush=True)
     model.training_summary = {"C": summary}
     return model

@@ -18,20 +18,18 @@ bootstrap_resamples: 1000
 conditions:
   - id: M
     config: method/M_dataset_expert_moe.yaml
-  - id: B1
-    config: baselines/B1_generic_moe.yaml
-    depends_on: {stage_a: M}
   - id: B2
     config: baselines/B2_capacity_matched_pooled_mlp.yaml
     depends_on: {stage_a: M}
   - id: B3
     config: baselines/B3_hard_routing_two_stage.yaml
     depends_on: {stage_a: M, stage_b: M}
+  - id: B4
+    config: baselines/B4_pooled_lightgbm.yaml   # CPU; its tuning runs once before its first seed
   - id: A1
-    config: ablations/A1_experts_trainable_stage_c.yaml
-    depends_on: {stage_a: M, stage_b: M}
+    config: ablations/A1_no_contrastive_loss.yaml   # trains its own Stage A, B and C
   - id: A2
-    config: ablations/A2_no_class_reliability.yaml
+    config: ablations/A2_uniform_expert_average.yaml
     depends_on: {stage_a: M, stage_b: M}
   - id: A3
     config: ablations/A3_private_encoders.yaml

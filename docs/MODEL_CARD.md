@@ -15,13 +15,16 @@ networks unlike the four source datasets.
   imputation and standardization). No dataset label or address is needed or
   accepted.
 * **Output:** the predicted class (one of 22), its probability, optionally all
-  22 probabilities, and for MoE models the 4 gate weights and the top expert.
+  22 probabilities, and for MoE models the 4 gate weights and the top expert
+  (A2 gives every expert the same weight).
 
 ## Bundles
 
 Each trained run exports a bundle (`model.safetensors`, `config.json`,
 `preprocessing.json`, `labels.json`, `metadata.json`); `load_bundle` verifies
-the SHA-256 of every file and loads weights with safetensors only.
+the SHA-256 of every file and loads weights with safetensors only. The B4
+baseline (LightGBM) ships `lightgbm_model.txt` in LightGBM's text format
+instead of `model.safetensors`.
 `metadata.json` records condition, seed, split, selected epochs, validation
 and test macro-F1, parameters, code commit and library versions.
 

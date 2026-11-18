@@ -1,0 +1,14 @@
+condition: A1
+display_name: No contrastive loss
+role: ablation
+description: >
+  M with a cross-entropy-only Stage A: the balanced supervised contrastive
+  term is dropped, everything else (encoder, probe, class weights, epochs,
+  optimizer, batch order) is as in M. Stage B and Stage C are retrained on
+  A1's own encoder with M's hyperparameters, without retuning. A1 reuses
+  nothing from M.
+expected_total_parameters: 22420
+overrides:
+  architecture: moe_dataset_class_conditional
+  training:
+    representation: {objective: ce}

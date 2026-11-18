@@ -16,7 +16,7 @@ def _bundle_dir(root, condition, seed=0):
     return os.path.join(root, "runs", condition, f"seed{seed}", "bundle")
 
 
-@pytest.mark.parametrize("condition", ["M", "B1", "B2", "B3", "A1", "A2", "A3"])
+@pytest.mark.parametrize("condition", ["M", "B2", "B3", "B4", "A1", "A2", "A3"])
 def test_bundle_reproduces_saved_test_predictions(trained, condition):
     bundle = load_bundle(_bundle_dir(trained["output"], condition))
     record = PredictionRecord.load(os.path.join(trained["output"], "runs", condition, "seed0", "eval", "test", "Test_Predictions.npz"))
@@ -86,4 +86,19 @@ def test_scaler_fit_on_train_rows_only(trained):
 def test_m_bundle_ships_stage_weights(trained):
     files = set(os.listdir(_bundle_dir(trained["output"], "M")))
     assert {"stage_a_encoder.safetensors", "stage_b_expert_bank.safetensors"} <= files
-    assert "stage_a_encoder.safetensors" not in os.listdir(_bundle_dir(trained["output"], "B1"))
+    assert "stage_a_encoder.safetensors" not in os.listdir(_bundle_dir(trained["output"], "B3"))
+
+
+def test_b4_bundle_is_a_lightgbm_text_model_on_the_47_features(trained):
+    from dmoe.training.lightgbm_baseline import assert_dataset_blind_booster
+
+    path = _bundle_dir(trained["output"], "B4")
+    files = set(os.listdir(path))
+    assert "lightgbm_model.txt" in files and "model.safetensors" not in files
+    bundle = load_bundle(path)
+    assert bundle.model.booster.feature_name() == bundle.feature_columns and len(bundle.feature_columns) == 47
+    with pytest.raises(AssertionError, match="dataset-blind"):
+        assert_dataset_blind_booster(bundle.model.booster, [*bundle.feature_columns, "dataset_id"])
+    frame = pd.read_csv(paths.dataset_csv_path("NF-ToN-IoT-v3", trained["data"]), nrows=20)
+    out = bundle.predict(frame, with_probs=True, with_gate=True)
+    assert len(out) == 20 and "top_expert" not in out

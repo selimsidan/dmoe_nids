@@ -1,0 +1,12 @@
+condition: A2
+display_name: No gating (uniform expert average)
+role: ablation
+description: >
+  M's Stage-A encoder and M's four Stage-B experts of the same seed,
+  combined with fixed equal weights: combined = (1/4) sum_d softmax(expert_d).
+  No gate network, no class reliability matrix, no Stage-C training and no
+  validation-based selection. 20,120 parameters; intentionally not capacity
+  matched (M's gate and reliability matrix are absent).
+expected_total_parameters: 20120
+overrides:
+  architecture: moe_dataset_uniform

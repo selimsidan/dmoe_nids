@@ -1,9 +1,7 @@
 """Expert banks for the MoE conditions.
 
-``DatasetExpertBank`` holds one ``Expert`` per active dataset (M, A1, A2, B3)
-or, for the generic MoE (B1), the same number of experts with no dataset
-assigned (named ``expert_0`` ... ``expert_3``). Every expert predicts the full
-22-class vocabulary.
+``DatasetExpertBank`` holds one ``Expert`` per active dataset (M, A1, A2, B3).
+Every expert predicts the full 22-class vocabulary.
 
 ``forward`` is the dense path and runs every expert on every row.
 ``forward_selected`` is the top-1 path used by B3: rows are grouped by their

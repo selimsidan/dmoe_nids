@@ -33,9 +33,11 @@ from .checkpoint import (
 from .config import CAMPAIGN_CONFIG
 from .dense_ooc import load_dense_ooc, run_dense_stage_b_ooc, run_dense_stage_c_ooc
 from .out_of_core_data import prepare_out_of_core_data
+from .model_utils import UNIFORM_GATE_ARCHITECTURES
 from .out_of_core_train import (
     CONTRACT_FILE,
     STAGE_C_SUMMARY_FILE,
+    assemble_uniform_stage_c,
     build_ooc_model,
     ensure_run_contract,
     run_stage_a_ooc,
@@ -72,6 +74,11 @@ def train_unit(config: dict, context) -> torch.nn.Module:
     stages = list(config["training"]["stages"])
     device = torch.device(config["training"]["device"])
 
+    if config["architecture"] == "pooled_lightgbm":
+        from .lightgbm_baseline import train_lightgbm_unit
+
+        return train_lightgbm_unit(config, context)
+
     if config["architecture"] == "matched_dense":
         if "A" in stages and not stage_complete(checkpoint_dir, "A"):
             run_stage_a_ooc(config, context)
@@ -80,7 +87,8 @@ def train_unit(config: dict, context) -> torch.nn.Module:
         model = run_dense_stage_b_ooc(config, context)
         return run_dense_stage_c_ooc(config, context, model)
 
-    for stage, function in (("A", run_stage_a_ooc), ("B", run_stage_b_ooc), ("C", run_stage_c_ooc)):
+    stage_c_function = assemble_uniform_stage_c if config["architecture"] in UNIFORM_GATE_ARCHITECTURES else run_stage_c_ooc
+    for stage, function in (("A", run_stage_a_ooc), ("B", run_stage_b_ooc), ("C", stage_c_function)):
         if stage not in stages:
             continue
         if stage_complete(checkpoint_dir, stage):
@@ -113,6 +121,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--scratch-root")
     parser.add_argument("--force-restart", action="store_true")
     parser.add_argument("--skip-evaluation", action="store_true")
+    parser.add_argument("--tune", action="store_true", help="B4 only: run its one-time tuning, not a seed")
     args = parser.parse_args(argv)
     roots = paths.apply_cli_roots(args.data_root, args.output_root, args.scratch_root)
     campaign = load_campaign(args.campaign)
@@ -123,11 +132,13 @@ def main(argv: list[str] | None = None) -> None:
     configure_reproducibility(config["seed"], deterministic=bool(config["training"].get("deterministic", True)))
     _resolve_device(config)
     checkpoint_dir = config["training"]["checkpoint_dir"]
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    if not args.tune:
+        os.makedirs(checkpoint_dir, exist_ok=True)
     started = time.monotonic()
     info = environment_info()
     print("=" * 80, flush=True)
-    print(f"[run] {args.condition} seed {args.seed} started {time.strftime('%Y-%m-%d %H:%M:%S %z')}", flush=True)
+    what = "tuning" if args.tune else f"seed {args.seed}"
+    print(f"[run] {args.condition} {what} started {time.strftime('%Y-%m-%d %H:%M:%S %z')}", flush=True)
     print(f"[run] architecture={config['architecture']} stages={config['training']['stages']} "
           f"split_mode={config['data']['split_mode']} split_seed={config['data']['split_seed']}", flush=True)
     print(f"[run] device={config['training']['device']} gpu={info.get('gpu')} torch={info.get('torch')}", flush=True)
@@ -135,9 +146,21 @@ def main(argv: list[str] | None = None) -> None:
         os.makedirs(path, exist_ok=True)
         usage = shutil.disk_usage(path)
         print(f"[run] {label} free={usage.free / 2**30:.1f}GiB", flush=True)
-    if args.force_restart:
+    if args.force_restart and not args.tune:
         _restart(checkpoint_dir)
 
+    if config["architecture"] == "pooled_lightgbm":
+        # B4 uses torch only to move arrays (see dmoe.openmp; the campaign starts B4 units
+        # through dmoe.training.run_lightgbm_unit, which also loads LightGBM first).
+        torch.set_num_threads(1)
+    if args.tune:
+        from .lightgbm_baseline import run_tuning
+
+        if config["architecture"] != "pooled_lightgbm":
+            raise ValueError(f"--tune applies to pooled_lightgbm conditions, not {config['architecture']}")
+        run_tuning(config, prepare_out_of_core_data(config), args.condition, roots["output"].path)
+        print(f"[run] {args.condition} tuning complete in {(time.monotonic() - started) / 60:.1f} min", flush=True)
+        return
     context = prepare_out_of_core_data(config)
     contract = ensure_run_contract(config, context)
     print(f"[run] contract={contract['signature']} split_signatures={context.split_signatures}", flush=True)

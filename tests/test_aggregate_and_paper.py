@@ -24,7 +24,8 @@ def test_n_and_mixed_seed_warning(summary):
     root, tables = summary
     overall = tables["Summary_Overall"].query("metric == 'macro_f1'").set_index("condition")
     assert overall.loc["M", "n"] == 2 and overall.loc["M", "seeds"] == "0 1"
-    assert overall.loc["B1", "n"] == 1 and np.isnan(overall.loc["B1", "sd"])
+    assert overall.loc["B2", "n"] == 1 and np.isnan(overall.loc["B2", "sd"])
+    assert np.isnan(overall.loc["B4", "total_parameters"]) and "trees" in overall.loc["B4", "model_size_note"]
     info = json.load(open(os.path.join(root, "summary", "Summary_Info.json")))
     assert any("different completed seed sets" in w for w in info["warnings"])
 
@@ -32,7 +33,7 @@ def test_n_and_mixed_seed_warning(summary):
 def test_pairs_only_common_seeds(summary):
     _, tables = summary
     paired = tables["Paired_vs_M"].query("metric == 'macro_f1' and origin == 'ALL'").set_index("condition")
-    assert set(paired.index) == {"B1", "B2", "B3", "A1", "A2", "A3"}
+    assert set(paired.index) == {"B2", "B3", "B4", "A1", "A2", "A3"}
     assert (paired["n_common_seeds"] == 1).all() and (paired["common_seeds"] == "0").all()
     per_seed = tables["Paired_vs_M_Per_Seed"]
     assert set(per_seed["seed"]) == {0}
@@ -114,3 +115,7 @@ def test_paper_tables(summary):
     summary_value = pd.read_csv(os.path.join(root, "summary", "Summary_Overall.csv")) \
         .query("condition == 'M' and metric == 'macro_f1'")["mean"].iloc[0]
     assert numbers.set_index("condition").loc["M", "macro_f1_mean"] == pytest.approx(summary_value)
+    assert list(numbers["condition"]) == ["M", "B2", "B3", "B4"]
+    assert "trees" in main  # B4 has no parameter count; its cell names trees and leaves
+    ablations = pd.read_csv(os.path.join(out, "Table_Ablations.csv"))
+    assert list(ablations["condition"]) == ["M", "A1", "A2", "A3"]

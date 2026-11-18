@@ -31,10 +31,34 @@ def test_different_seed_differs(trained):
 
 
 def test_dependent_conditions_reuse_m_weights(trained):
-    """A1/A2/B3 start Stage C from M's Stage A+B of the same seed; A1 then changes the experts."""
+    """B3 and A2 use M's Stage A+B of the same seed unchanged; A1 trains its own experts."""
     root = trained["output"]
     m_bank = torch.load(os.path.join(root, "runs", "M", "seed0", "checkpoints", "stage_B", "stage_b_expert_bank.pt"))["expert_bank_state"]
-    for condition, experts_trained in (("B3", False), ("A2", False), ("A1", True)):
+    m_encoder = torch.load(os.path.join(root, "runs", "M", "seed0", "checkpoints", "stage_A", "stage_a_encoder.pt"))["encoder_state"]
+    for condition, own_weights in (("B3", False), ("A2", False), ("A1", True)):
         state = _stage_c(root, condition, 0)
-        same = all(torch.equal(state[f"expert_bank.{k}"], v) for k, v in m_bank.items())
-        assert same is (not experts_trained), condition
+        same_experts = all(torch.equal(state[f"expert_bank.{k}"], v) for k, v in m_bank.items())
+        same_encoder = all(torch.equal(state[f"encoder.{k}"], v) for k, v in m_encoder.items())
+        assert same_experts is (not own_weights) and same_encoder is (not own_weights), condition
+
+
+def test_b4_same_seed_identical_different_seed_differs(trained, tmp_path, monkeypatch):
+    """B4 seed 0 retrained from scratch (not reused from tuning) is identical; seed 1 differs."""
+    import shutil
+
+    roots = set_roots(monkeypatch, str(tmp_path))
+    roots["data"] = trained["data"]
+    tuning = os.path.join(roots["output"], "runs", "B4", "tuning")
+    shutil.copytree(os.path.join(trained["output"], "runs", "B4", "tuning"), tuning)
+    chosen = json.load(open(os.path.join(tuning, "chosen.json")))
+    shutil.rmtree(os.path.join(tuning, chosen["config_id"]))  # force a fresh training run
+    train_unit("B4", 0, roots)
+    train_unit("B4", 1, roots)
+
+    def model_text(root, seed):
+        path = os.path.join(root, "runs", "B4", f"seed{seed}", "checkpoints", "stage_C", "lightgbm_model.txt")
+        return open(path).read().split("parameters:")[0]
+
+    assert model_text(trained["output"], 0) == model_text(roots["output"], 0)
+    assert model_text(roots["output"], 0) != model_text(roots["output"], 1)
+    assert _test_f1(trained["output"], "B4", 0) == _test_f1(roots["output"], "B4", 0)

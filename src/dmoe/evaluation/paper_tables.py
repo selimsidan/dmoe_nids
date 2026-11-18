@@ -7,7 +7,8 @@ column is bolded; weighted-F1 is never bolded.
 
 Files (each table as ``.tex`` and ``.csv``, each figure as ``.pdf`` and ``.png``):
 
-* ``Table_Main``: M against the baselines B1 to B3, overall and per-dataset macro-F1, parameters.
+* ``Table_Main``: M against the baselines B2 to B4, overall and per-dataset macro-F1, parameters
+  (B4 is a tree model: its cell reads n/a with its trees and leaves).
 * ``Table_Ablations``: M against A1 to A3 with the paired difference from M.
 * ``Table_Per_Dataset``: every condition and dataset: macro-F1, balanced accuracy, MCC, weighted-F1.
 * ``Table_Per_Class``: per-class F1 of M and the baselines.
@@ -26,8 +27,9 @@ import pandas as pd
 from .. import paths
 from .figures import heatmap_figure, save_figure
 
-MAIN_CONDITIONS = ["M", "B1", "B2", "B3"]
+MAIN_CONDITIONS = ["M", "B2", "B3", "B4"]
 ABLATION_CONDITIONS = ["M", "A1", "A2", "A3"]
+ALL_CONDITIONS = ["M", "B2", "B3", "B4", "A1", "A2", "A3"]
 
 
 def _read(summary_dir: str, name: str) -> pd.DataFrame:
@@ -122,6 +124,18 @@ class Summary:
         row = self.overall[self.overall["condition"] == condition]
         return int(row["total_parameters"].iloc[0]) if not row.empty and pd.notna(row["total_parameters"].iloc[0]) else None
 
+    def size_note(self, condition: str) -> str | None:
+        row = self.overall[self.overall["condition"] == condition]
+        if row.empty or "model_size_note" not in row or pd.isna(row["model_size_note"].iloc[0]):
+            return None
+        return str(row["model_size_note"].iloc[0])
+
+    def params_cell(self, condition: str) -> str:
+        params = self.params(condition)
+        if params:
+            return f"{params:,}"
+        return self.size_note(condition) or "--"
+
     def datasets(self) -> list[str]:
         return list(dict.fromkeys(self.per_dataset["origin"]))
 
@@ -146,9 +160,10 @@ def main_table(summary: Summary, out_dir: str, conditions: list[str], stem: str,
     for condition in conditions:
         mean, sd, n = summary.stat(condition, "macro_f1")
         ns.add(n)
-        row = {"Condition": summary.display.get(condition, condition), "Params": f"{summary.params(condition):,}"
-               if summary.params(condition) else "--", "n": str(n), "Macro-F1": _cell(mean, sd)}
-        num = {"condition": condition, "params": summary.params(condition), "n": n, "macro_f1_mean": mean, "macro_f1_sd": sd}
+        row = {"Condition": summary.display.get(condition, condition), "Params": summary.params_cell(condition),
+               "n": str(n), "Macro-F1": _cell(mean, sd)}
+        num = {"condition": condition, "params": summary.params(condition), "model_size_note": summary.size_note(condition),
+               "n": n, "macro_f1_mean": mean, "macro_f1_sd": sd}
         means["Macro-F1"].append(mean)
         for dataset, label in zip(datasets, columns[4:]):
             m, s, _ = summary.stat(condition, "macro_f1", dataset)
@@ -182,18 +197,18 @@ def ablation_table(summary: Summary, out_dir: str) -> None:
             diff_text = _cell(diff_mean, diff_sd)
             favoring = f"{int(p['seeds_favoring_reference'])}/{n_common}"
         params = summary.params(condition)
-        rows.append({"Condition": summary.display.get(condition, condition), "Params": f"{params:,}" if params else "--",
+        rows.append({"Condition": summary.display.get(condition, condition), "Params": summary.params_cell(condition),
                      "n": str(n), "Macro-F1": _cell(mean, sd), "M minus condition": diff_text, "Seeds favouring M": favoring})
         numeric.append({"condition": condition, "params": params, "n": n, "macro_f1_mean": mean, "macro_f1_sd": sd,
                         "difference_vs_m_mean": diff_mean, "difference_vs_m_sd": diff_sd, "n_common_seeds": n_common})
     bold = {(i, "Macro-F1") for i in _best_rows(means)}
     caption = (f"Ablations. Test macro-F1, mean $\\pm$ SD over seeds ({_n_note(ns)}); the difference uses the seeds "
-               "both conditions completed. A3 is not capacity matched (see Params).")
+               "both conditions completed. A2 and A3 are not capacity matched (see Params).")
     _write_table(pd.DataFrame(rows), pd.DataFrame(numeric), out_dir, "Table_Ablations", caption, bold)
 
 
 def per_dataset_table(summary: Summary, out_dir: str, dataset_display: dict[str, str]) -> None:
-    conditions = summary.available(["M", "B1", "B2", "B3", "A1", "A2", "A3"])
+    conditions = summary.available(ALL_CONDITIONS)
     metrics = [("macro_f1", "Macro-F1"), ("balanced_accuracy", "Bal. acc."), ("matthews_corrcoef", "MCC"),
                ("weighted_f1", "Weighted-F1 (ref.)")]
     rows, numeric, bold = [], [], set()
@@ -282,7 +297,9 @@ def make_paper_tables(output_root: str | None = None, dataset_display: dict[str,
         from ..training.config import BASE_CONFIG, load_yaml
 
         dataset_display = load_yaml(BASE_CONFIG).get("data", {}).get("display_names", {})
-    main_table(summary, out_dir, MAIN_CONDITIONS, "Table_Main", "Dataset-expert MoE against the baselines.", dataset_display)
+    main_table(summary, out_dir, MAIN_CONDITIONS, "Table_Main",
+               "Dataset-expert MoE against the baselines. B4 is a tree model without a parameter count.",
+               dataset_display)
     ablation_table(summary, out_dir)
     per_dataset_table(summary, out_dir, dataset_display)
     per_class_table(summary, out_dir)

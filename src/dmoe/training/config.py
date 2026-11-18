@@ -24,26 +24,20 @@ BASE_CONFIG = os.path.join(CONFIG_ROOT, "base.yaml")
 CAMPAIGN_CONFIG = os.path.join(CONFIG_ROOT, "campaign.yaml")
 
 MOE_ARCHITECTURES = {
-    "moe_dataset_soft",
+    "moe_dataset_uniform",
     "moe_dataset_damex",
-    "moe_basic_class_conditional",
     "moe_dataset_class_conditional",
     "moe_dataset_private_encoders_class_conditional",
 }
 DENSE_ARCHITECTURES = {"matched_dense"}
-ARCHITECTURES = MOE_ARCHITECTURES | DENSE_ARCHITECTURES
+TREE_ARCHITECTURES = {"pooled_lightgbm"}
+ARCHITECTURES = MOE_ARCHITECTURES | DENSE_ARCHITECTURES | TREE_ARCHITECTURES
 
 # Presets applied unless the condition sets the key explicitly.
 _ARCHITECTURE_DEFAULTS = {
     "moe_dataset_damex": {
         "training.stage_c.gate_supervision": "damex",
         "training.stage_c.expert_update_policy": "assigned_only",
-    },
-    "moe_basic_class_conditional": {
-        "training.stage_b.warmstart_mode": "generic_pooled",
-        "training.stage_c.gate_supervision": "none",
-        "training.stage_c.expert_update_policy": "all",
-        "training.stage_c.lambda_expert_anchor": 0.0,
     },
 }
 

@@ -49,7 +49,7 @@ layout. Other files in the package (`bag-info.txt`, `manifest-sha1.txt`,
 3. In Google Drive create `MyDrive/NIDS_datasets/` and inside it one folder per
    dataset, named exactly like the registry key (`NF-UNSW-NB15-v3`, ...).
 4. Upload each dataset's `data/` folder into its dataset folder.
-5. Open `notebooks/01_train_method.ipynb` in Colab, keep the default
+5. Open `notebooks/01_reproduce_all.ipynb` in Colab, keep the default
    SETTINGS, and run it: its preflight cell checks the files before training.
 
 Tip: the CSVs are large (tens of GB together). If you can obtain a direct

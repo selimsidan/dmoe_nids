@@ -4,7 +4,11 @@ Outputs (all in the split's evaluation directory):
 
 * ``Gate_By_Dataset.csv``: mean gate weight per expert for the rows of each
   origin dataset, mean gate entropy, mean top gate weight, and the fraction
-  of rows whose top expert is the dataset's own expert (dataset-named experts only).
+  of rows whose top expert is the dataset's own expert (dataset-named experts
+  with a non-constant gate only).
+
+For A2 (constant equal weights) only ``Gate_By_Dataset.csv`` and
+``Expert_Performance_By_Dataset.csv`` are written.
 * ``Expert_Utilization.csv``: how many rows each expert wins by argmax.
 * ``Route_Confusion.csv``: origin dataset (rows) against top expert (columns).
 * ``Expert_Performance_By_Dataset.csv``: every expert evaluated alone on every origin.
@@ -30,12 +34,18 @@ def _atomic_csv(frame: pd.DataFrame, path: str, index: bool = False) -> None:
     os.replace(temporary, path)
 
 
+def gate_is_constant(record: PredictionRecord) -> bool:
+    """True for A2's uniform average: every row gives every expert the same weight."""
+    return record.gate is not None and bool(np.all(record.gate == record.gate[:1, :1]))
+
+
 def gate_by_dataset(record: PredictionRecord) -> pd.DataFrame:
     gate = record.gate.astype(np.float64)
     rows = []
     top = gate.argmax(axis=1)
     entropy = -(gate * np.log(np.clip(gate, 1e-12, 1.0))).sum(axis=1)
-    experts_are_datasets = record.expert_names == record.dataset_names
+    # With a constant gate there is no top expert, so the own-expert fraction is undefined.
+    experts_are_datasets = record.expert_names == record.dataset_names and not gate_is_constant(record)
     for d, name in enumerate(record.dataset_names):
         mask = record.dataset_idx == d
         count = int(mask.sum())
@@ -112,6 +122,13 @@ def write_routing_outputs(record: PredictionRecord, output_dir: str, *, figures:
     frames: dict[str, pd.DataFrame] = {}
     frames["gate_by_dataset"] = gate_by_dataset(record)
     _atomic_csv(frames["gate_by_dataset"], os.path.join(output_dir, "Gate_By_Dataset.csv"))
+    if gate_is_constant(record):
+        # A2: fixed equal weights, so top-expert routing tables are meaningless; the
+        # per-expert performance (each expert alone on each dataset) is still written.
+        if record.expert_confusion is not None:
+            frames["expert_performance"] = expert_performance(record)
+            _atomic_csv(frames["expert_performance"], os.path.join(output_dir, "Expert_Performance_By_Dataset.csv"))
+        return frames
     frames["expert_utilization"] = expert_utilization(record)
     _atomic_csv(frames["expert_utilization"], os.path.join(output_dir, "Expert_Utilization.csv"))
     routes = route_confusion(record)

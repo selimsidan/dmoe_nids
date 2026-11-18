@@ -106,7 +106,7 @@ def test_repository_is_clean():
 
 
 # ---------------------------------------------------------------- notebooks
-NOTEBOOKS = ["01_train_method", "02_train_baselines", "03_train_ablations", "04_evaluate", "05_predict"]
+NOTEBOOKS = ["01_reproduce_all", "02_evaluate", "03_predict"]
 
 
 @pytest.mark.parametrize("name", NOTEBOOKS)
@@ -124,8 +124,14 @@ def test_notebook_structure(name):
         if cell.cell_type == "code":
             assert cell.outputs == [] and cell.execution_count is None
             compile(cell.source, name, "exec")
-    if name.startswith("0") and "train" in name:
-        assert namespace["EXECUTE"] is False and namespace["RUNS_PER_SESSION"] == 1
+    if name == "01_reproduce_all":
+        assert namespace["EXECUTE"] is False and namespace["RUNS_PER_SESSION"] is None
+        assert namespace["CONDITIONS"] == ["M", "B2", "B3", "B4", "A1", "A2", "A3"]
+        assert namespace["SEEDS"] == [0, 1, 2, 3, 4]
+
+
+def test_notebook_folder_holds_exactly_the_documented_notebooks():
+    assert sorted(f[:-6] for f in os.listdir(NOTEBOOK_DIR) if f.endswith(".ipynb")) == NOTEBOOKS
 
 
 # ---------------------------------------------------------------- colab roots
@@ -185,9 +191,10 @@ def test_cli_plan_and_verify(trained):
 
     roots = ["--data-root", trained["data"], "--output-root", trained["output"], "--scratch-root", trained["scratch"]]
     sets = [arg for override in FAST_OVERRIDES for arg in ("--set", override)]
-    plan = _script("run_campaign.py", "--only", "M", "B1", "--seeds", "0", "1", *roots, *sets)
+    plan = _script("run_campaign.py", "--only", "M", "B2", "B4", "--seeds", "0", "1", *roots, *sets)
     assert plan.returncode == 0, plan.stderr
-    assert "M seed 0: complete" in plan.stdout and "B1 seed 1: pending" in plan.stdout and "dry run" in plan.stdout
+    assert "M seed 0: complete" in plan.stdout and "B2 seed 1: pending" in plan.stdout and "dry run" in plan.stdout
+    assert "B4 tuning: complete" in plan.stdout and "B4 seed 1: pending" in plan.stdout
     verify = _script("verify_data.py", "--no-hash", *roots)
     assert verify.returncode == 1 and "docs/DATA.md" in verify.stdout  # synthetic row counts differ
 

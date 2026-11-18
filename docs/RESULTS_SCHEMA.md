@@ -23,6 +23,7 @@ log.txt                streamed training output
 Training_History.csv   per-epoch training record of all stages (shared stages included)
 figures/               Stage_{A,B,C}_Learning_Curves.png
 checkpoints/           run_contract.json, stage_A/, stage_B/, stage_C/ (not committed)
+                       B4: lightgbm/ (chunk progress) and stage_C/lightgbm_model.txt
 bundle/                the exported model (not committed; see MODEL_CARD.md)
 eval/Resource_Accounting.csv
 eval/selection/        validation reports written during Stage C selection
@@ -67,7 +68,8 @@ auc_method` (`origin_datasets`: the datasets where the class occurs, `|`-separat
 ### Routing (MoE conditions)
 * `Gate_By_Dataset.csv`: `origin, rows, own_expert_top_fraction,
   mean_gate_entropy, mean_max_gate, mean_gate__<expert>...`
-  (`own_expert_top_fraction` only for dataset-named experts).
+  (`own_expert_top_fraction` only for dataset-named experts; empty for A2,
+  whose equal weights have no top expert).
 * `Expert_Utilization.csv`: `expert, argmax_rows, argmax_fraction,
   argmax_fraction__<origin>...`
 * `Route_Confusion.csv`: `origin, top_expert, count, row_ratio`
@@ -75,7 +77,10 @@ auc_method` (`origin_datasets`: the datasets where the class occurs, `|`-separat
 * `Expert_Performance_By_Dataset.csv`: every expert evaluated alone on every
   origin: `origin, expert, is_assigned_expert` and the overall metrics
   without AUCs.
-* `Class_Conditional_Reliability.csv` (M, B1, A1, A3): `expert, class,
+* For A2 only `Gate_By_Dataset.csv` and `Expert_Performance_By_Dataset.csv`
+  are written (no utilization or route tables, no reliability matrix).
+  B2 and B4 have no routing files.
+* `Class_Conditional_Reliability.csv` (M, A1, A3): `expert, class,
   reliability_logit, reliability_only_expert_preference` (softmax of R over
   experts for that class).
 * `figures/Gate_Mass_Heatmap`, `figures/Route_Confusion`,
@@ -83,7 +88,7 @@ auc_method` (`origin_datasets`: the datasets where the class occurs, `|`-separat
 
 ### `eval/<split>/<Split>_Predictions.npz` (not committed)
 `y_true` int16, `y_pred` int16, `dataset_idx` uint8, `confidence` float16,
-`gate` float16 (rows x experts, MoE only), `roc_positive`/`roc_negative`
+`gate` float16 (rows x experts, MoE only; constant 0.25 for A2), `roc_positive`/`roc_negative`
 int64 (datasets x classes x bins score histograms), `expert_confusion` int64
 (datasets x experts x classes x classes), `reliability` float32 (when
 present), `header` (JSON: class, dataset and expert names, per-dataset class
@@ -103,7 +108,28 @@ inference cost (`test_inference_wall_seconds`, `test_inference_rows_per_second`,
 `test_inference_microseconds_per_row`, `test_inference_device`,
 `test_peak_memory_bytes`).
 
+For B4 the parameter and MAC columns read `n/a`; instead it reports
+`lightgbm_trees`, `lightgbm_total_leaves`, `lightgbm_best_round`,
+`lightgbm_rounds_trained`, `lightgbm_model_bytes`, `lightgbm_chosen` (the tuned
+configuration), `lightgbm_tuning_data_mode` and `lightgbm_threads`; its `C_*`
+training columns describe the boosting run (`C_epochs_completed` = rounds
+trained, `C_selected_epoch` = best round). The manifest has
+`total_parameters: null` and a `model_size` block with the tree counts.
+
+### B4 tuning: `runs/B4/tuning/`
+`data_mode.json` (the declared rule's decision: pilot seconds per round,
+projected grid hours, `mode` full or sample), `Tuning_Log.csv` (`config_id,
+learning_rate, num_leaves, seed, data_mode, train_rows, best_round,
+val_macro_f1, rounds_trained, stopped_early, wall_seconds`), `chosen.json`
+(chosen configuration, its validation macro-F1 and best round,
+`seed_max_rounds`, `cap_extended`, the rule) and one folder per configuration
+with `progress.json`, `model_progress.txt` and `Validation_Checks.csv`
+(`round, val_macro_f1, val_multi_logloss`).
+
 ### `Training_History.csv`
+(B4: one Stage C row per validation check, `encoder_role` lightgbm, `epoch` =
+boosting round.)
+
 `seed, stage, encoder_role, dataset, epoch, objective, learning_rate, rows,
 optimizer_steps, examples_seen, epoch_seconds, train_total_loss,
 train_ce_loss, train_representation_loss, train_weighted_representation_loss,
@@ -120,9 +146,11 @@ and recall, accuracy, support) and, for dataset-expert conditions,
 ## Across seeds: `summary/`
 
 * `Summary_Overall.csv`, `Summary_Per_Dataset.csv` (`origin`),
-  `Summary_Per_Class.csv` (`class`): `condition, [total_parameters | origin |
-  class], metric, mean, sd, min, max, n, seeds, ci95_low, ci95_high`
-  (SD with ddof 1; t-based 95% interval of the mean).
+  `Summary_Per_Class.csv` (`class`): `condition, [total_parameters,
+  model_size_note | origin | class], metric, mean, sd, min, max, n, seeds,
+  ci95_low, ci95_high` (SD with ddof 1; t-based 95% interval of the mean;
+  `model_size_note` names B4's mean trees and leaves, its `total_parameters`
+  is empty).
 * `Paired_vs_M.csv`: `reference, condition, origin, metric, difference_mean,
   difference_sd, difference_min, difference_max, difference_ci95_low,
   difference_ci95_high, n_common_seeds, common_seeds, seeds_favoring_reference`
@@ -142,7 +170,8 @@ and recall, accuracy, support) and, for dataset-expert conditions,
 
 ## Paper exhibits: `paper/`
 
-`Table_Main`, `Table_Ablations`, `Table_Per_Dataset`, `Table_Per_Class`
+`Table_Main` (M against B2, B3, B4), `Table_Ablations` (M against A1, A2, A3,
+with the paired difference from M), `Table_Per_Dataset`, `Table_Per_Class`
 (`.tex` and `.csv` with unrounded numbers), `Figure_Routing_<condition>` and
 `Figure_Confusion_<condition>` (`.pdf`, `.png`).
 

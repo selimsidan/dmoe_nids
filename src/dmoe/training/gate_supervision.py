@@ -2,7 +2,7 @@
 
 ``gate_supervision`` selects the router's training signal:
 
-* ``none``: task loss only (M, B1, A1, A2, A3).
+* ``none``: task loss only (M, A1, A3; A2 has no trainable gate).
 * ``damex``: dataset-ID cross-entropy only; the task-loss gradient into the
   gate is cut by detaching the gate weights in the task path (baseline B3).
 * ``light_aux`` / ``hard``: task loss plus a dataset-ID auxiliary term

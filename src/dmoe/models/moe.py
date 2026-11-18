@@ -9,9 +9,10 @@ Both topologies expose the same dataset-blind ``forward(x)``::
     combined_probs = einsum('bd,bdc->bc', gate_weights, expert_probs)  # (B, C)
     prediction     = argmax(combined_probs, dim=-1)
 
-``ClassConditionalMoEDatasetNIDS`` (M, B1, A1, A3) adds a D x C reliability
+``ClassConditionalMoEDatasetNIDS`` (M, A1, A3) adds a D x C reliability
 matrix that adjusts the gate weights separately for each class. The top-1
-routing path (B3) runs only the argmax expert per row.
+routing path (B3) runs only the argmax expert per row. With a ``UniformGate``
+(A2) the dense path is the plain average of the experts' probabilities.
 
 ``forward(x)`` takes exactly one argument by construction; the inference code
 asserts this with ``inspect.signature`` (``dmoe.inference.bundle``).
@@ -31,7 +32,7 @@ class MoEDatasetNIDS(nn.Module):
         self,
         encoder: SharedEncoder,
         expert_bank: nn.Module,
-        gate: Gate,
+        gate: nn.Module,
         class_names: list[str],
         routing_mode: str = "dense",
     ) -> None:

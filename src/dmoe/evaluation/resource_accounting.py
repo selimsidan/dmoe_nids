@@ -3,6 +3,10 @@
 Forward MACs count Linear-layer weight multiplications per sample.  The report
 uses the explicit convention ``FLOPs = 2 * MACs`` (one multiply plus one add)
 and excludes nonlinearities, dropout, indexing, and softmax from both values.
+
+B4 (LightGBM) has no parameters or MACs in this sense; its row reports trees,
+leaves, model size and the selected boosting round instead, and the parameter
+and MAC columns read ``n/a``.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from ..models.private_encoder_experts import PrivateEncoderExpertBank
 
 
 RESOURCE_FILE = "Resource_Accounting.csv"
+NOT_APPLICABLE = "n/a"
 FLOP_CONVENTION = "linear_only; one_multiply_plus_one_add=2_FLOPs"
 
 
@@ -87,6 +92,37 @@ def _training_columns(summary: dict | None) -> dict:
     return columns
 
 
+def lightgbm_profile(model, config: dict, *, trial_id, split_signature, training_summary) -> dict:
+    """B4: tree counts and size instead of parameters and MACs."""
+    info = getattr(model, "lightgbm_info", {}) or {}
+    row = {
+        "Trial_ID": trial_id,
+        "condition": config.get("condition", {}).get("condition"),
+        "architecture": config.get("architecture"),
+        "routing_mode": None,
+        "selection_mode": "best_val_round",
+        "seed": config.get("seed", 0),
+        "split_signature": split_signature,
+        "total_parameters": NOT_APPLICABLE,
+        "trainable_parameters": NOT_APPLICABLE,
+        "encoder_parameters": NOT_APPLICABLE,
+        "gate_router_parameters": NOT_APPLICABLE,
+        "classifier_expert_parameters": NOT_APPLICABLE,
+        "stored_linear_macs": NOT_APPLICABLE,
+        "flop_convention": NOT_APPLICABLE,
+        "lightgbm_trees": model.num_trees(),
+        "lightgbm_total_leaves": model.total_leaves(),
+        "lightgbm_best_round": model.best_round(),
+        "lightgbm_rounds_trained": info.get("rounds_trained"),
+        "lightgbm_model_bytes": len(model.model_text.encode()),
+        "lightgbm_chosen": json.dumps((info.get("chosen") or {}).get("chosen")),
+        "lightgbm_tuning_data_mode": (info.get("chosen") or {}).get("data_mode"),
+        "lightgbm_threads": model.threads,
+        **_training_columns(training_summary),
+    }
+    return row
+
+
 def resource_profile(
     model: nn.Module,
     config: dict,
@@ -97,6 +133,9 @@ def resource_profile(
     training_summary: dict | None = None,
 ) -> dict:
     """Return one report-ready row with architecture-specific active costs."""
+    if config.get("architecture") == "pooled_lightgbm":
+        return lightgbm_profile(model, config, trial_id=trial_id, split_signature=split_signature,
+                                training_summary=training_summary)
     encoder_params = gate_params = classifier_params = 0
     encoder_macs = gate_macs = classifier_macs = 0
     active_params: list[int]

@@ -4,12 +4,13 @@
 architecture                                        condition  model
 ==================================================  =========  =====================
 moe_dataset_class_conditional                       M, A1      class-conditional MoE
-moe_basic_class_conditional                         B1         class-conditional MoE, generic experts
 matched_dense                                       B2         encoder + matched MLP head
 moe_dataset_damex (gate.routing: top1)              B3         top-1 routed baseline
-moe_dataset_soft                                    A2         plain soft MoE
+moe_dataset_uniform                                 A2         uniform average of the experts
 moe_dataset_private_encoders_class_conditional      A3         class-conditional MoE, private encoders
 ==================================================  =========  =====================
+
+B4 (``pooled_lightgbm``) is not a torch model; see ``lightgbm_baseline``.
 """
 from __future__ import annotations
 
@@ -19,19 +20,18 @@ from torch import nn
 from ..models.baselines import MatchedDenseClassifier, MatchedDenseHead
 from ..models.dataset_experts import DatasetExpertBank
 from ..models.encoder import SharedEncoder, resolve_encoder_config
-from ..models.gate import Gate
+from ..models.gate import Gate, UniformGate
 from ..models.moe import ClassConditionalMoEDatasetNIDS, MoEDatasetNIDS
 from ..models.private_encoder_experts import PrivateEncoderExpertBank
 
-BASIC_MOE_ARCHITECTURES = {"moe_basic_class_conditional"}
 CLASS_CONDITIONAL_ARCHITECTURES = {
     "moe_dataset_class_conditional",
-    "moe_basic_class_conditional",
     "moe_dataset_private_encoders_class_conditional",
 }
 PRIVATE_ENCODER_ARCHITECTURES = {"moe_dataset_private_encoders_class_conditional"}
+UNIFORM_GATE_ARCHITECTURES = {"moe_dataset_uniform"}
 DATASET_MOE_ARCHITECTURES = {
-    "moe_dataset_soft",
+    "moe_dataset_uniform",
     "moe_dataset_damex",
     "moe_dataset_class_conditional",
     "moe_dataset_private_encoders_class_conditional",
@@ -181,17 +181,6 @@ def build_matched_dense_model(
     return MatchedDenseClassifier(encoder, head)
 
 
-def expert_names_for_architecture(architecture: str, dataset_names: list[str]) -> list[str]:
-    """Expert names: dataset names, or ``expert_<i>`` for the generic MoE (B1).
-
-    B1 keeps one expert per active dataset in count, so its capacity matches
-    M, but its experts are generic and never assigned a dataset.
-    """
-    if architecture in BASIC_MOE_ARCHITECTURES:
-        return [f"expert_{index}" for index in range(len(dataset_names))]
-    return list(dataset_names)
-
-
 def bank_kind_for_architecture(architecture: str) -> str:
     if architecture in PRIVATE_ENCODER_ARCHITECTURES:
         return "private_encoder"
@@ -289,16 +278,18 @@ def build_model(
     model_cfg: dict,
 ) -> MoEDatasetNIDS:
     bank_kind = bank_kind_for_architecture(architecture)
-    expert_names = expert_names_for_architecture(architecture, dataset_names)
     bank = build_expert_bank(
         bank_kind,
-        expert_names,
+        list(dataset_names),
         model_cfg["latent_dim"],
         len(class_names),
         model_cfg,
         input_dim=encoder.input_dim,
     )
-    gate = Gate(model_cfg["latent_dim"], len(dataset_names), model_cfg["gate"]["hidden_dims"])
+    if architecture in UNIFORM_GATE_ARCHITECTURES:
+        gate = UniformGate(len(dataset_names))
+    else:
+        gate = Gate(model_cfg["latent_dim"], len(dataset_names), model_cfg["gate"]["hidden_dims"])
     routing_mode = model_cfg.get("gate", {}).get("routing", "dense")
     model_class = (
         ClassConditionalMoEDatasetNIDS

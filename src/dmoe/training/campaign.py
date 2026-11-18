@@ -9,6 +9,10 @@ and ablations that reuse its Stage A or Stage B.
 A unit is complete when ``runs/<condition>/seed<k>/manifest.json`` says so and
 its recorded config hash matches the current config. Completed units are
 skipped; interrupted units resume from their last epoch checkpoint.
+
+B4 (``pooled_lightgbm``) has one extra unit, its tuning, which runs once
+before B4's first seed and writes ``runs/B4/tuning/chosen.json``. It is
+complete when that file matches the current B4 settings.
 """
 from __future__ import annotations
 
@@ -108,7 +112,12 @@ def checkpoint_dir(condition: str, seed: int, output_root: str | None = None) ->
     return os.path.join(run_dir(condition, seed, output_root), "checkpoints")
 
 
-def stages_for(entry: ConditionEntry) -> list[str]:
+LIGHTGBM_STAGES = ["lightgbm"]
+
+
+def stages_for(entry: ConditionEntry, architecture: str | None = None) -> list[str]:
+    if architecture == "pooled_lightgbm":
+        return list(LIGHTGBM_STAGES)
     stages = ["A", "B", "C"]
     if "stage_a" in entry.depends_on:
         stages.remove("A")
@@ -134,7 +143,7 @@ def resolve_unit_config(
     config["data"]["split_mode"] = campaign.split_mode
     training = config.setdefault("training", {})
     training["checkpoint_dir"] = checkpoint_dir(condition, seed, root)
-    training["stages"] = stages_for(entry)
+    training["stages"] = stages_for(entry, config["architecture"])
     training["save_epoch_history"] = True
     for key, parent in entry.depends_on.items():
         stage = "A" if key == "stage_a" else "B"
@@ -180,10 +189,39 @@ def _final_checkpoint(config: dict) -> str:
     return stage_file(config["training"]["checkpoint_dir"], "C", name)
 
 
-def missing_dependencies(campaign: Campaign, condition: str, seed: int, output_root: str | None = None) -> list[str]:
-    """Human-readable list of parent stages that do not exist yet."""
+def condition_architecture(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> str:
+    return load_config(campaign.entry(condition).config_path, overrides)["architecture"]
+
+
+def tuning_seed(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> int:
+    from .lightgbm_baseline import lightgbm_settings
+
+    return int(lightgbm_settings(load_config(campaign.entry(condition).config_path, overrides))["tuning"]["seed"])
+
+
+def needs_tuning(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> bool:
+    return condition_architecture(campaign, condition, overrides) == "pooled_lightgbm"
+
+
+def tuning_complete(
+    campaign: Campaign, condition: str, output_root: str | None = None, overrides: list[str] | None = None,
+) -> bool:
+    from .lightgbm_baseline import tuning_complete as _complete
+
+    seed = tuning_seed(campaign, condition, overrides)
+    config = resolve_unit_config(campaign, condition, seed, output_root=output_root, overrides=overrides)
+    return _complete(config, condition, output_root)
+
+
+def missing_dependencies(
+    campaign: Campaign, condition: str, seed: int, output_root: str | None = None,
+    overrides: list[str] | None = None,
+) -> list[str]:
+    """Human-readable list of parent stages (or the B4 tuning) that do not exist yet."""
     entry = campaign.entry(condition)
     missing = []
+    if needs_tuning(campaign, condition, overrides) and not tuning_complete(campaign, condition, output_root, overrides):
+        missing.append(f"{condition} tuning")
     for key, parent in entry.depends_on.items():
         stage = "A" if key == "stage_a" else "B"
         path = stage_file(checkpoint_dir(parent, seed, output_root), stage, STAGE_FILES[stage])
@@ -200,8 +238,11 @@ class Unit:
     stages: list[str]
     waits_for: list[str]  # parents scheduled earlier in this plan
     missing: list[str]  # parents neither present nor scheduled
+    kind: str = "train"  # train | tuning (B4 only, once, with its tuning seed)
 
     def describe(self) -> str:
+        if self.kind == "tuning":
+            return f"{self.condition} tuning: {self.status} (CPU; runs once before {self.condition}'s seeds)"
         text = f"{self.condition} seed {self.seed}: {self.status}"
         if self.status != "complete":
             text += f" (trains stages {','.join(self.stages)})"
@@ -225,20 +266,32 @@ def plan_units(
     seed_list = [int(seed) for seed in (seeds if seeds is not None else campaign.seeds)]
     order = [entry.id for entry in campaign.conditions if entry.id in selected]
     units: list[Unit] = []
-    scheduled: set[tuple[str, int]] = set()
+    scheduled: set[tuple[str, int | str]] = set()
+    architectures = {condition: condition_architecture(campaign, condition, overrides) for condition in order}
     for seed in seed_list:
         for condition in order:
             entry = campaign.entry(condition)
+            stages = stages_for(entry, architectures[condition])
+            if architectures[condition] == "pooled_lightgbm" and (condition, "tuning") not in scheduled:
+                done = tuning_complete(campaign, condition, output_root, overrides)
+                started = os.path.isdir(os.path.join(paths.output_root(output_root), "runs", condition, "tuning"))
+                status = "complete" if done else ("in_progress" if started else "pending")
+                units.append(Unit(condition, tuning_seed(campaign, condition, overrides), status,
+                                  ["tuning"], [], [], kind="tuning"))
+                scheduled.add((condition, "tuning"))
             if unit_complete(campaign, condition, seed, output_root, overrides):
-                units.append(Unit(condition, seed, "complete", stages_for(entry), [], []))
+                units.append(Unit(condition, seed, "complete", stages, [], []))
                 continue
             waits, missing = [], []
-            for text in missing_dependencies(campaign, condition, seed, output_root):
+            for text in missing_dependencies(campaign, condition, seed, output_root, overrides):
+                if text.endswith(" tuning"):
+                    waits.append(text)
+                    continue
                 parent = text.split(" seed ")[0]
                 (waits if (parent, seed) in scheduled else missing).append(text)
             started = os.path.isdir(checkpoint_dir(condition, seed, output_root))
             status = "blocked" if missing else ("in_progress" if started else "pending")
-            units.append(Unit(condition, seed, status, stages_for(entry), waits, missing))
+            units.append(Unit(condition, seed, status, stages, waits, missing))
             if status != "blocked":
                 scheduled.add((condition, seed))
     return units
@@ -277,16 +330,21 @@ def run_campaign(
         if max_units is not None and ran >= max_units:
             print(f"[campaign] reached the per-session limit of {max_units} unit(s); rerun to continue")
             break
-        still_missing = missing_dependencies(campaign, unit.condition, unit.seed, output_root)
-        if still_missing:
-            print(f"[campaign] skipping {unit.condition} seed {unit.seed}: needs {', '.join(still_missing)}")
-            continue
+        if unit.kind == "train":
+            still_missing = missing_dependencies(campaign, unit.condition, unit.seed, output_root, overrides)
+            if still_missing:
+                print(f"[campaign] skipping {unit.condition} seed {unit.seed}: needs {', '.join(still_missing)}")
+                continue
+        uses_lightgbm = unit.kind == "tuning" or unit.stages == LIGHTGBM_STAGES
         command = [
-            sys.executable, "-u", "-m", "dmoe.training.run_unit",
+            sys.executable, "-u", "-m",
+            "dmoe.training.run_lightgbm_unit" if uses_lightgbm else "dmoe.training.run_unit",
             "--campaign", campaign.path,
             "--condition", unit.condition,
             "--seed", str(unit.seed),
         ]
+        if unit.kind == "tuning":
+            command.append("--tune")
         if output_root:
             command += ["--output-root", output_root]
         for override in overrides or []:
@@ -295,11 +353,16 @@ def run_campaign(
             "PYTHONHASHSEED": str(unit.seed),
             "CUBLAS_WORKSPACE_CONFIG": os.environ.get("CUBLAS_WORKSPACE_CONFIG", ":4096:8"),
         }
-        log_path = os.path.join(run_dir(unit.condition, unit.seed, output_root), LOG_FILE)
+        if unit.kind == "tuning":
+            log_path = os.path.join(paths.output_root(output_root), "runs", unit.condition, "tuning", LOG_FILE)
+            label = f"{unit.condition} tuning"
+        else:
+            log_path = os.path.join(run_dir(unit.condition, unit.seed, output_root), LOG_FILE)
+            label = f"{unit.condition} seed {unit.seed}"
         run_streaming_logged(
             command, log_path, env=environment,
             heartbeat_seconds=heartbeat_seconds,
-            label=f"{unit.condition} seed {unit.seed}",
+            label=label,
         )
         ran += 1
     return plan_units(campaign, conditions, seeds, output_root, overrides)
