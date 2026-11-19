@@ -191,13 +191,19 @@ def test_b4_time_limit_stops_tuning_before_training(tmp_path):
     from dmoe.training.lightgbm_baseline import PILOT_FILE, check_projected_time
 
     config = load_config(load_campaign().entry("B4").config_path)
-    pilot = {"seconds_per_round": 100.0, "rows": 1000, "projected_hours_grid": 30.0}
+    config["lightgbm"]["tuning"]["max_projected_hours"] = 24
+    pilot = {"seconds_per_round": 100.0, "rows": 1000, "projected_hours_grid": 30.0,
+             "projected_hours_per_run_at_max_rounds": 7.5}
     (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
     with pytest.raises(RuntimeError, match="above the declared 24 h limit"):
         check_projected_time(config, None, str(tmp_path), None)
     pilot["projected_hours_grid"] = 20.0
     (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
     assert check_projected_time(config, None, str(tmp_path), None)["projected_hours_grid"] == 20.0
+    pilot["projected_hours_grid"] = 300.0  # the default (no limit) only records the pilot
+    (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
+    config["lightgbm"]["tuning"]["max_projected_hours"] = None
+    assert check_projected_time(config, None, str(tmp_path), None)["projected_hours_grid"] == 300.0
 
 
 def test_b4_materialize_reads_sparse_indices():
@@ -209,13 +215,13 @@ def test_b4_materialize_reads_sparse_indices():
     np.testing.assert_array_equal(_materialize(rows, None, chunk_rows=1_000), rows)
 
 
-def test_b4_default_sample_and_time_rule_are_declared():
+def test_b4_default_sample_and_pilot_are_declared():
     from dmoe.training.campaign import load_campaign
     from dmoe.training.config import load_config
     from dmoe.training.lightgbm_baseline import grid_configs, lightgbm_settings
 
     settings = lightgbm_settings(load_config(load_campaign().entry("B4").config_path))
-    assert settings["tuning"]["max_projected_hours"] == 24 and settings["tuning"]["pilot_rounds"] == 20
+    assert settings["tuning"]["max_projected_hours"] is None and settings["tuning"]["pilot_rounds"] == 20
     assert settings["training_sample"] == {"target_fraction": 0.1, "seed": 0}
     assert grid_configs(settings) == [
         {"learning_rate": 0.05, "num_leaves": 63}, {"learning_rate": 0.05, "num_leaves": 255},
@@ -228,7 +234,7 @@ def test_b4_forbidden_settings_are_rejected():
     from dmoe.training.lightgbm_baseline import lightgbm_settings
 
     base = {"params": {"objective": "multiclass"}, "grid": {}, "max_rounds": 10, "eval_every_rounds": 10,
-            "patience_rounds": 10, "chunk_rounds": 10, "tuning": {},
+            "patience_rounds": 10, "checkpoint_rounds": 10, "tuning": {},
                 "training_sample": {"target_fraction": 0.1, "seed": 0}}
     for key in ("is_unbalance", "class_weight", "boosting"):
         with pytest.raises(ValueError, match="forbids"):
@@ -255,14 +261,21 @@ class _Arrays:
         return PreparedArrays.datasets(self)
 
 
-def test_b4_interrupted_run_resumes_identically(tmp_path, monkeypatch):
+def test_b4_uninterrupted_runs_are_identical_and_interrupted_runs_resume(tmp_path, monkeypatch):
     from dmoe.training import lightgbm_baseline as lb
 
     params = dict(objective="multiclass", num_class=3, feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1,
                   deterministic=True, force_row_wise=True, metric="None", verbose=-1, num_threads=2,
                   bagging_seed=5, feature_fraction_seed=6, num_leaves=7, learning_rate=0.1)
-    settings = dict(max_rounds=60, eval_every=10, patience=1000, chunk_rounds=20)
+    settings = dict(max_rounds=60, eval_every=10, patience=1000, checkpoint_rounds=20)
     whole = lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "whole"), label="whole", **settings)
+    again = lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "again"), label="again", **settings)
+
+    def trees(name):
+        return (tmp_path / name / "model_progress.txt").read_text().split("parameters:")[0]
+
+    assert trees("whole") == trees("again") and whole["checks"] == again["checks"]
+    assert whole["finished"] and whole["rounds_done"] == 60 and whole["resumed_after_rounds"] == []
 
     original = lb._write_json
 
@@ -277,13 +290,17 @@ def test_b4_interrupted_run_resumes_identically(tmp_path, monkeypatch):
     with pytest.raises(Disconnect):
         lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "split"), label="split", **settings)
     monkeypatch.setattr(lb, "_write_json", original)
+    saved = json.loads((tmp_path / "split" / "progress.json").read_text())
+    assert saved["rounds_done"] == 20 and not saved["finished"]
     resumed = lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "split"), label="split", **settings)
-
-    def trees(name):
-        return (tmp_path / name / "model_progress.txt").read_text().split("parameters:")[0]
-
-    assert trees("whole") == trees("split")
-    assert whole["checks"] == resumed["checks"] and whole["best_round"] == resumed["best_round"]
+    assert resumed["finished"] and resumed["rounds_done"] == 60 and resumed["resumed_after_rounds"] == [20]
+    assert [c["round"] for c in resumed["checks"]] == [10, 20, 30, 40, 50, 60]
+    # the first 20 rounds are the same trees as the uninterrupted run
+    assert [c["val_macro_f1"] for c in resumed["checks"][:2]] == [c["val_macro_f1"] for c in whole["checks"][:2]]
+    booster = lb._lgb().Booster(model_file=str(tmp_path / "split" / "model_progress.txt"))
+    assert booster.current_iteration() == 60
+    # a finished run is not retrained
+    assert lb.train_booster(params, None, state_dir=str(tmp_path / "split"), label="split", **settings) == resumed
 
 
 def test_b4_early_stopping_keeps_the_best_round(tmp_path):
@@ -291,7 +308,7 @@ def test_b4_early_stopping_keeps_the_best_round(tmp_path):
 
     params = dict(objective="multiclass", num_class=3, deterministic=True, force_row_wise=True, metric="None",
                   verbose=-1, num_threads=2, bagging_seed=1, feature_fraction_seed=2, num_leaves=7, learning_rate=0.3)
-    state = lb.train_booster(params, _Arrays(), max_rounds=400, eval_every=10, patience=30, chunk_rounds=20,
+    state = lb.train_booster(params, _Arrays(), max_rounds=400, eval_every=10, patience=30, checkpoint_rounds=20,
                              state_dir=str(tmp_path / "run"), label="es")
     assert state["finished"] and state["stopped_early"]
     assert state["rounds_done"] - state["best_round"] >= 30

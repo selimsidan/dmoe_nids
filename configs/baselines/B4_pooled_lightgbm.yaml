@@ -37,10 +37,9 @@ overrides:
     extended_max_rounds: 4000
     eval_every_rounds: 10
     patience_rounds: 50
-    # Every run trains in fixed chunks continued from the saved model, so an
-    # interrupted and resumed run follows exactly the same path as an
-    # uninterrupted one.
-    chunk_rounds: 200
+    # Every run trains in one pass and saves a checkpoint every
+    # checkpoint_rounds rounds; after a disconnect it resumes from the last one.
+    checkpoint_rounds: 200
     # One fixed training sample for every B4 run (tuning and seeds). Classes
     # with at most `cap` rows keep all rows; larger classes keep `cap` rows,
     # drawn uniformly; `cap` is the largest value that keeps the sample within
@@ -52,7 +51,8 @@ overrides:
     tuning:
       seed: 0
       # A timing pilot (pilot_rounds of the largest configuration on the
-      # training sample) projects the grid; above max_projected_hours tuning
-      # stops before training (null: no pilot).
-      max_projected_hours: 24
+      # training sample) records seconds per round and memory in pilot.json
+      # (0: no pilot). max_projected_hours, if set, stops tuning before
+      # training when the worst-case grid projection exceeds it.
+      max_projected_hours: null
       pilot_rounds: 20

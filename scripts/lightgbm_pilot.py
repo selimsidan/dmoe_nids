@@ -3,7 +3,7 @@
 Loads B4's class-capped training sample and all validation rows into memory
 (as B4 does), trains
 `--rounds` rounds of the largest configuration with validation macro-F1
-checked every round, and prints seconds per round, the cost of continuing
+checked every round, and prints seconds per round, the cost of resuming
 chunks from a saved model, peak memory, and projections for the tuning grid
 and for the seed runs. Writes nothing to the results.
 
@@ -50,7 +50,7 @@ def main() -> None:
     print(f"[pilot] one run at {settings['max_rounds']} rounds (no early stop): "
           f"{cost['projected_hours_per_run_at_max_rounds']:.1f} h")
     print(f"[pilot] tuning grid ({len(grid_configs(settings))} configurations, training sample): "
-          f"{cost['projected_hours_grid']:.1f} h (limit {settings['tuning']['max_projected_hours']} h)")
+          f"{cost['projected_hours_grid']:.1f} h (worst case, no early stopping)")
     print(f"[pilot] {seeds} seed runs: up to {seeds * cost['projected_hours_per_run_at_max_rounds']:.1f} h "
           "(early stopping usually ends runs sooner)")
     if cost.get("peak_memory_bytes"):

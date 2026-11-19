@@ -23,7 +23,7 @@ log.txt                streamed training output
 Training_History.csv   per-epoch training record of all stages (shared stages included)
 figures/               Stage_{A,B,C}_Learning_Curves.png
 checkpoints/           run_contract.json, stage_A/, stage_B/, stage_C/ (not committed)
-                       B4: lightgbm/ (chunk progress) and stage_C/lightgbm_model.txt
+                       B4: lightgbm/ (checkpoint and progress) and stage_C/lightgbm_model.txt
 bundle/                the exported model (not committed; see MODEL_CARD.md)
 eval/Resource_Accounting.csv
 eval/selection/        validation reports written during Stage C selection

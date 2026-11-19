@@ -126,18 +126,18 @@ Tuning protocol (pre-registered in `configs/baselines/B4_pooled_lightgbm.yaml`):
   once with seed 0 on the fixed split. The configuration with the highest
   validation macro-F1 is used unchanged for every seed (ties go to the earlier
   configuration). Test data is never read during tuning.
-* Time limit: before the grid, a timing pilot (20 rounds of the largest
-  configuration on the training sample) projects the whole grid. Above 24
-  hours, tuning stops before training anything and the setting is revisited
-  by the author; the pilot's measurements are recorded in
-  `runs/B4/tuning/pilot.json`. The grid and the seed runs use the same
-  training sample.
+* Before the grid, a timing pilot (20 rounds of the largest configuration on
+  the training sample) records seconds per round, memory and the worst-case
+  projected time in `runs/B4/tuning/pilot.json`; it does not change any
+  setting. The grid and the seed runs use the same training sample.
 * If the chosen configuration's best round lies within the last 50 rounds of
   the 2,000-round cap, the seed runs use a 4,000-round cap instead, so training
   length never limits B4.
-* Every B4 run trains in chunks of 200 rounds, each continued from the saved
-  model, so a run that is interrupted and resumed follows exactly the same
-  path as an uninterrupted one.
+* Every B4 run trains in one pass and saves a checkpoint every 200 rounds.
+  A run interrupted by a disconnect resumes from its last checkpoint; the
+  resume round is recorded (`resumed_after_rounds` in the run's
+  `progress.json`), because LightGBM's row and feature subsampling restarts
+  there, so a resumed run is not bit-identical to an uninterrupted one.
 
 ## Ablations
 

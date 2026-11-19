@@ -21,9 +21,11 @@ Two kinds of unit:
 * **Seed runs** (``runs/B4/seed<k>/``): the chosen configuration on the same
   training sample.
 
-Every run trains in fixed chunks of ``chunk_rounds`` rounds, each continued
-from the saved model, so a run interrupted by a disconnect resumes at the
-same chunk boundary and follows exactly the path of an uninterrupted run.
+Every run trains in one continuous pass and saves its model and progress
+every ``checkpoint_rounds`` rounds. A run interrupted by a disconnect resumes
+from its last checkpoint (recorded in ``resumed_after_rounds``); LightGBM's
+row and feature subsampling restarts there, so only a resumed run differs
+from an uninterrupted one. Uninterrupted runs are exactly reproducible.
 Validation macro-F1 is checked every ``eval_every_rounds`` rounds; training
 stops after ``patience_rounds`` rounds without improvement and keeps the
 best round.
@@ -66,13 +68,15 @@ def _lgb():
 
 def lightgbm_settings(config: dict) -> dict:
     values = copy.deepcopy(config.get("lightgbm") or {})
-    required = ("params", "grid", "max_rounds", "eval_every_rounds", "patience_rounds", "chunk_rounds", "tuning",
+    required = ("params", "grid", "max_rounds", "eval_every_rounds", "patience_rounds", "checkpoint_rounds", "tuning",
                 "training_sample")
     missing = [key for key in required if key not in values]
     if missing:
         raise ValueError(f"lightgbm config is missing {missing}")
-    if int(values["chunk_rounds"]) % int(values["eval_every_rounds"]):
-        raise ValueError("lightgbm.chunk_rounds must be a multiple of eval_every_rounds")
+    if int(values["checkpoint_rounds"]) % int(values["eval_every_rounds"]):
+        raise ValueError("lightgbm.checkpoint_rounds must be a multiple of eval_every_rounds")
+    if values["tuning"].get("max_projected_hours") is not None and not int(values["tuning"].get("pilot_rounds", 0)):
+        raise ValueError("lightgbm.tuning.max_projected_hours needs pilot_rounds > 0")
     if int(values["patience_rounds"]) % int(values["eval_every_rounds"]):
         raise ValueError("lightgbm.patience_rounds must be a multiple of eval_every_rounds")
     forbidden = {"is_unbalance", "class_weight", "scale_pos_weight", "boosting", "boosting_type"} & set(values["params"])
@@ -250,9 +254,8 @@ class PreparedArrays:
     """In-memory training and validation arrays; ``datasets()`` gives fresh ``lgb.Dataset`` objects.
 
     The training rows are the fixed class-capped sample (``capped_sample``);
-    validation is complete. LightGBM continues a chunk from a saved model by
-    predicting the kept raw rows, so the rows stay in memory
-    (``free_raw_data=False``). Each run gets its own Dataset objects; bin
+    validation is complete. LightGBM resumes from a saved model by predicting
+    the kept raw rows, so the rows stay in memory (``free_raw_data=False``). Each run gets its own Dataset objects; bin
     boundaries are deterministic.
     """
 
@@ -337,12 +340,12 @@ def train_booster(
     max_rounds: int,
     eval_every: int,
     patience: int,
-    chunk_rounds: int,
+    checkpoint_rounds: int,
     state_dir: str,
     label: str,
     on_check=None,
 ) -> dict:
-    """Train (or resume) one chunked, early-stopped run; return its final state.
+    """Train (or resume) one early-stopped run in one pass, checkpointing as it goes; return its final state.
 
     The state directory holds ``model_progress.txt`` (every round trained so
     far) and ``progress.json`` (rounds done, validation checks, best round).
@@ -354,15 +357,31 @@ def train_booster(
     state = _read_json(state_path) if os.path.isfile(state_path) else {
         "rounds_done": 0, "checks": [], "best_round": None, "best_val_macro_f1": None,
         "stopped_early": False, "finished": False, "wall_seconds": 0.0, "params": params,
+        "resumed_after_rounds": [],
     }
     if state.get("params") != json.loads(json.dumps(params, default=str)):
         raise ValueError(f"{state_dir} was started with different LightGBM parameters; move it away to retrain")
-    if state["rounds_done"]:
-        print(f"[B4 {label}] resuming after round {state['rounds_done']}", flush=True)
+    if state["finished"]:
+        return state
+    resume_from = int(state["rounds_done"])
+    if resume_from:
+        state.setdefault("resumed_after_rounds", []).append(resume_from)
+        print(f"[B4 {label}] resuming after round {resume_from} (checkpoint)", flush=True)
     truth = np.asarray(arrays.y_val, dtype=np.int64)
     num_classes = int(params["num_class"])
     current = {"round": 0}
-    train = val = None
+    started = time.monotonic()
+    wall_before = float(state["wall_seconds"])
+
+    def checkpoint(model, rounds_done: int) -> None:
+        state["rounds_done"] = int(rounds_done)
+        state["wall_seconds"] = wall_before + time.monotonic() - started
+        model.save_model(model_path + ".tmp", num_iteration=-1)
+        os.replace(model_path + ".tmp", model_path)
+        _write_json(state, state_path)
+        pd.DataFrame(state["checks"]).to_csv(os.path.join(state_dir, CHECKS_FILE), index=False)
+        print(f"[B4 {label}] checkpoint after round {rounds_done} "
+              f"({state['wall_seconds'] / 60:.1f} min so far)", flush=True)
 
     def feval(preds, _data):
         round_number = current["round"]
@@ -396,33 +415,18 @@ def train_booster(
         if round_number - state["best_round"] >= patience:
             state["stopped_early"] = True
             raise lgb.callback.EarlyStopException(state["best_round"] - 1, [])
+        if round_number % checkpoint_rounds == 0 and round_number < max_rounds:
+            checkpoint(env.model, round_number)
 
-    while not state["finished"]:
-        rounds = min(chunk_rounds, max_rounds - state["rounds_done"])
-        if train is None:
-            train, val = arrays.datasets()
-        started = time.monotonic()
-        checks_before = len(state["checks"])
-        try:
-            booster = lgb.train(
-                params, train, num_boost_round=rounds,
-                init_model=model_path if state["rounds_done"] else None,
-                valid_sets=[val], valid_names=["val"], feval=feval,
-                callbacks=[before, after], keep_training_booster=True,
-            )
-        except Exception:
-            del state["checks"][checks_before:]
-            raise
-        state["rounds_done"] = int(booster.current_iteration())
-        state["wall_seconds"] += time.monotonic() - started
-        if state["stopped_early"] or state["rounds_done"] >= max_rounds:
-            state["finished"] = True
-        booster.save_model(model_path + ".tmp", num_iteration=-1)
-        os.replace(model_path + ".tmp", model_path)
-        _write_json(state, state_path)
-        pd.DataFrame(state["checks"]).to_csv(os.path.join(state_dir, CHECKS_FILE), index=False)
-        print(f"[B4 {label}] saved after round {state['rounds_done']} "
-              f"({state['wall_seconds'] / 60:.1f} min so far)", flush=True)
+    train, val = arrays.datasets()
+    booster = lgb.train(
+        params, train, num_boost_round=max_rounds - resume_from,
+        init_model=model_path if resume_from else None,
+        valid_sets=[val], valid_names=["val"], feval=feval,
+        callbacks=[before, after], keep_training_booster=True,
+    )
+    state["finished"] = True
+    checkpoint(booster, booster.current_iteration())
     return state
 
 
@@ -497,8 +501,8 @@ def assert_dataset_blind_booster(booster, feature_columns: list[str]) -> None:
 
 
 def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays, *, rounds: int) -> dict:
-    """Seconds per round (with validation) of the largest grid configuration, and the
-    projected cost of continuing chunks from a saved model."""
+    """Seconds per round (with validation) of the largest grid configuration, projected
+    to a run at ``max_rounds`` without early stopping, and the cost of one resume."""
     lgb = _lgb()
     settings = lightgbm_settings(config)
     configs = grid_configs(settings)
@@ -515,8 +519,8 @@ def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays
     booster = lgb.train(params, train, num_boost_round=int(rounds), valid_sets=[val], feval=feval,
                         keep_training_booster=True)
     seconds_per_round = (time.monotonic() - started) / int(rounds)
-    # One real chunk continuation (as every B4 run does), so the peak memory below includes
-    # the re-scoring of all training rows from the saved model.
+    # One real resume from a saved model (as after a disconnect), so the peak memory below
+    # includes the re-scoring of all training rows.
     import tempfile
 
     with tempfile.TemporaryDirectory() as folder:
@@ -531,12 +535,12 @@ def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays
     started = time.monotonic()
     booster.predict(sample, num_threads=num_threads(), raw_score=True)
     predict_seconds_per_tree_row = (time.monotonic() - started) / (booster.num_trees() * sample_rows)
-    max_rounds = int(settings["max_rounds"]); chunk = int(settings["chunk_rounds"])
+    max_rounds = int(settings["max_rounds"])
     num_classes = len(context.data.class_names)
     rows = arrays.rows
-    continuation_trees = sum(start * num_classes for start in range(chunk, max_rounds, chunk))
-    continuation_seconds = continuation_trees * rows * predict_seconds_per_tree_row
-    run_hours = (max_rounds * seconds_per_round + continuation_seconds) / 3600
+    # A resume near the end of a run re-scores every training row with all trees so far.
+    worst_resume_seconds = max_rounds * num_classes * rows * predict_seconds_per_tree_row
+    run_hours = max_rounds * seconds_per_round / 3600
     peak = None
     try:
         import resource
@@ -548,7 +552,7 @@ def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays
     return {
         "pilot_rounds": int(rounds), "pilot_config": largest, "rows": int(rows), "threads": num_threads(),
         "seconds_per_round": seconds_per_round,
-        "continuation_seconds_per_run_at_max_rounds": continuation_seconds,
+        "worst_case_resume_seconds": worst_resume_seconds,
         "measured_continuation_seconds_after_pilot": measured_continuation_seconds,
         "projected_hours_per_run_at_max_rounds": run_hours,
         "projected_hours_grid": run_hours * len(configs),
@@ -559,25 +563,25 @@ def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays
 
 def check_projected_time(config: dict, context: OutOfCoreContext, directory: str,
                          arrays: "PreparedArrays") -> dict | None:
-    """Run the timing pilot once (on the training sample) and apply the declared time limit.
+    """Run the timing pilot once (on the training sample) and record it; optionally apply a time limit.
 
-    With ``tuning.max_projected_hours: null`` there is no pilot. Above the
-    limit, tuning stops before training anything: the author decides.
+    ``tuning.pilot_rounds: 0`` skips the pilot. With ``tuning.max_projected_hours``
+    set, a projection above it stops tuning before training anything.
     """
     tuning = lightgbm_settings(config)["tuning"]
     limit = tuning.get("max_projected_hours")
-    if limit is None:
+    if not int(tuning.get("pilot_rounds", 0)):
         return None
     path = os.path.join(directory, PILOT_FILE)
     if os.path.isfile(path):
         pilot = _read_json(path)
     else:
         pilot = measure_cost(config, context, arrays, rounds=int(tuning.get("pilot_rounds", 20)))
-        pilot["max_projected_hours"] = float(limit)
         _write_json(pilot, path)
-    print(f"[B4 tuning] pilot: {pilot['seconds_per_round']:.1f} s per round on {pilot['rows']:,} rows; projected grid "
-          f"time {pilot['projected_hours_grid']:.1f} h (limit {float(limit):.0f} h)", flush=True)
-    if pilot["projected_hours_grid"] > float(limit):
+    print(f"[B4 tuning] pilot: {pilot['seconds_per_round']:.1f} s per round on {pilot['rows']:,} rows; worst case "
+          f"(no early stopping) {pilot['projected_hours_per_run_at_max_rounds']:.1f} h per run, "
+          f"{pilot['projected_hours_grid']:.1f} h for the grid", flush=True)
+    if limit is not None and pilot["projected_hours_grid"] > float(limit):
         raise RuntimeError(
             f"B4 tuning projected at {pilot['projected_hours_grid']:.1f} h, above the declared "
             f"{float(limit):.0f} h limit; nothing was trained. See {path}.")
@@ -613,7 +617,7 @@ def run_tuning(config: dict, context: OutOfCoreContext, condition: str, output_r
         state = train_booster(
             params, arrays, max_rounds=int(settings["max_rounds"]),
             eval_every=int(settings["eval_every_rounds"]), patience=int(settings["patience_rounds"]),
-            chunk_rounds=int(settings["chunk_rounds"]), state_dir=os.path.join(directory, config_id),
+            checkpoint_rounds=int(settings["checkpoint_rounds"]), state_dir=os.path.join(directory, config_id),
             label=f"tuning {config_id}",
         )
         row = {"config_id": config_id, **values, "seed": seed, "train_rows": arrays.rows, "best_round": state["best_round"],
@@ -685,7 +689,7 @@ def train_lightgbm_unit(config: dict, context: OutOfCoreContext) -> LightGBMMode
         state = train_booster(
             params, arrays, max_rounds=max_rounds,
             eval_every=int(settings["eval_every_rounds"]), patience=int(settings["patience_rounds"]),
-            chunk_rounds=int(settings["chunk_rounds"]), state_dir=state_dir, label=f"seed {seed}",
+            checkpoint_rounds=int(settings["checkpoint_rounds"]), state_dir=state_dir, label=f"seed {seed}",
             on_check=on_check,
         ) if not finished else _read_json(state_file)
         text = final_model_text(state_dir, state["best_round"])

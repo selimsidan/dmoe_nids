@@ -40,9 +40,9 @@ FAST_OVERRIDES = [
     "lightgbm.grid.num_leaves=[7,15]",
     "lightgbm.max_rounds=40",
     "lightgbm.extended_max_rounds=60",
-    "lightgbm.chunk_rounds=20",
+    "lightgbm.checkpoint_rounds=20",
     "lightgbm.patience_rounds=20",
-    "lightgbm.tuning.max_projected_hours=null",
+    "lightgbm.tuning.pilot_rounds=0",
     "lightgbm.training_sample.target_fraction=0.5",
 ]
 

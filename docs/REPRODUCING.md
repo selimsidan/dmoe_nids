@@ -81,8 +81,9 @@ re-evaluation refuse them.
 Every run seeds Python, NumPy and PyTorch, uses deterministic cuDNN and
 `torch.use_deterministic_algorithms(True)`, and draws batch orders from NumPy
 generators seeded per stage and epoch. B4 uses LightGBM's `deterministic`
-mode with seeded row and feature subsampling, and trains in fixed 200-round
-chunks so that a resumed run is identical to an uninterrupted one. Its result
+mode with seeded row and feature subsampling; an uninterrupted B4 run is
+exactly reproducible, and a run resumed after a disconnect records its resume
+round (`resumed_after_rounds`), since subsampling restarts there. Its result
 can depend on the LightGBM version and the number of CPU threads, both
 recorded in the manifest.
 
@@ -119,7 +120,7 @@ does the latter on its own).
 * Edit only the SETTINGS cell. `RUNS_PER_SESSION = 1` trains one unit per
   execution; `None` trains until done or disconnected. Rerunning the notebook
   resumes where it stopped (completed units are skipped, an interrupted unit
-  resumes from its last finished epoch, or for B4 its last 200-round chunk).
+  resumes from its last finished epoch, or for B4 its last checkpoint, saved every 200 rounds).
 * Output streams in the notebook and into `runs/<condition>/seed<k>/log.txt`.
 
 **Colab secrets** (key icon in the left sidebar), all optional:
