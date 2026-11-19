@@ -28,7 +28,7 @@ python scripts/run_campaign.py                              # plan: what is done
 python scripts/run_campaign.py --execute                    # train everything pending
 python scripts/run_campaign.py --only M --seeds 3 4 --execute
 python scripts/run_campaign.py --only B2 B3 --execute --runs-per-session 1
-python scripts/run_campaign.py --only B4 --execute         # CPU with about 30 GiB of RAM or more
+python scripts/run_campaign.py --only B4 --execute         # CPU runtime with high RAM
 python scripts/lightgbm_pilot.py                           # B4 timing pilot; writes no results
 ```
 
@@ -112,7 +112,8 @@ the cross-seed summary and paper tables (`02_evaluate` with `MODE = "tables"`
 does the latter on its own).
 
 * Choose a GPU runtime with high RAM for `01_reproduce_all` (B4 trains on the
-  CPU cores and needs about 30 GiB of RAM). Alternatively run
+  CPU cores; its training sample and the full validation set need more than
+  a standard runtime's RAM). Alternatively run
   `CONDITIONS = ['B4']` in a separate CPU high-RAM session and the other six
   conditions in a GPU session at the same time; they write to different folders.
 * Edit only the SETTINGS cell. `RUNS_PER_SESSION = 1` trains one unit per

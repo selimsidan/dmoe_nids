@@ -1,6 +1,7 @@
 """B4 timing pilot: train a few rounds of the largest grid configuration and project the cost.
 
-Loads all training and validation rows into memory (as B4 does), trains
+Loads B4's class-capped training sample and all validation rows into memory
+(as B4 does), trains
 `--rounds` rounds of the largest configuration with validation macro-F1
 checked every round, and prints seconds per round, the cost of continuing
 chunks from a saved model, peak memory, and projections for the tuning grid
@@ -42,13 +43,13 @@ def main() -> None:
     settings = lightgbm_settings(config)
     rounds = args.rounds or int(settings["tuning"].get("pilot_rounds", 20))
     context = prepare_out_of_core_data(config)
-    cost = measure_cost(config, context, PreparedArrays(config, context, "full"), rounds=rounds)
+    cost = measure_cost(config, context, PreparedArrays(config, context), rounds=rounds)
     seeds = len(campaign.seeds)
     print(json.dumps(cost, indent=2, default=str))
     print(f"[pilot] {cost['seconds_per_round']:.2f} s per round on {cost['rows']:,} rows with {cost['threads']} threads")
     print(f"[pilot] one run at {settings['max_rounds']} rounds (no early stop): "
           f"{cost['projected_hours_per_run_at_max_rounds']:.1f} h")
-    print(f"[pilot] tuning grid ({len(grid_configs(settings))} configurations, all rows): "
+    print(f"[pilot] tuning grid ({len(grid_configs(settings))} configurations, training sample): "
           f"{cost['projected_hours_grid']:.1f} h (limit {settings['tuning']['max_projected_hours']} h)")
     print(f"[pilot] {seeds} seed runs: up to {seeds * cost['projected_hours_per_run_at_max_rounds']:.1f} h "
           "(early stopping usually ends runs sooner)")

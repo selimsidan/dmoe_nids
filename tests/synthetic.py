@@ -42,7 +42,8 @@ FAST_OVERRIDES = [
     "lightgbm.extended_max_rounds=60",
     "lightgbm.chunk_rounds=20",
     "lightgbm.patience_rounds=20",
-    "lightgbm.tuning.data_mode=full",
+    "lightgbm.tuning.max_projected_hours=null",
+    "lightgbm.training_sample.target_fraction=0.5",
 ]
 
 

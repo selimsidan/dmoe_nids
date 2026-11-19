@@ -3,10 +3,13 @@ display_name: Pooled LightGBM
 role: baseline
 description: >
   One dataset-blind gradient-boosted tree model (LightGBM, multiclass) trained
-  on all pooled training rows with the same 47 prepared features and the same
-  square-root inverse-frequency class weights as M (as per-row sample
-  weights). No dataset identity, resampling, feature engineering, custom
-  loss, thresholds or calibration. The boosting round is selected by
+  with the same 47 prepared features and the same square-root
+  inverse-frequency class weights as M (as per-row sample weights). For
+  compute, every B4 run uses one fixed class-capped sample of the pooled
+  training rows (about 10%): smaller classes keep every row, larger ones are
+  thinned and reweighted so the weighted loss equals M's in expectation. No
+  dataset identity, feature engineering, custom loss, thresholds or
+  calibration. The boosting round is selected by
   validation macro-F1, like M's Stage-C epoch. Four configurations are tuned
   once on seed 0 (validation only); the chosen one is used for every seed.
   Trained on CPU; uses nothing from M.
@@ -38,11 +41,18 @@ overrides:
     # interrupted and resumed run follows exactly the same path as an
     # uninterrupted one.
     chunk_rounds: 200
+    # One fixed training sample for every B4 run (tuning and seeds). Classes
+    # with at most `cap` rows keep all rows; larger classes keep `cap` rows,
+    # drawn uniformly; `cap` is the largest value that keeps the sample within
+    # target_fraction of all training rows. Kept rows of class c are weighted
+    # by n_c / k_c on top of M's class weight. Validation and test are complete.
+    training_sample:
+      target_fraction: 0.1
+      seed: 0
     tuning:
       seed: 0
-      # auto: full training rows unless the measured projection of the whole
-      # grid exceeds max_projected_hours, then a fixed uniform sample.
-      data_mode: auto            # auto | full | sample
-      sample_fraction: 0.1
+      # A timing pilot (pilot_rounds of the largest configuration on the
+      # training sample) projects the grid; above max_projected_hours tuning
+      # stops before training (null: no pilot).
       max_projected_hours: 24
       pilot_rounds: 20

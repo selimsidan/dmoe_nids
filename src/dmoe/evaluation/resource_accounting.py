@@ -116,7 +116,7 @@ def lightgbm_profile(model, config: dict, *, trial_id, split_signature, training
         "lightgbm_rounds_trained": info.get("rounds_trained"),
         "lightgbm_model_bytes": len(model.model_text.encode()),
         "lightgbm_chosen": json.dumps((info.get("chosen") or {}).get("chosen")),
-        "lightgbm_tuning_data_mode": (info.get("chosen") or {}).get("data_mode"),
+        "lightgbm_train_rows": (info.get("chosen") or {}).get("train_rows"),
         "lightgbm_threads": model.threads,
         **_training_columns(training_summary),
     }

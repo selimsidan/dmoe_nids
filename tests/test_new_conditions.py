@@ -114,7 +114,10 @@ def test_m_encoder_is_rejected_for_a1(trained):
 def test_b4_tuning_log_and_choice(trained):
     tuning = os.path.join(trained["output"], "runs", "B4", "tuning")
     log = pd.read_csv(os.path.join(tuning, "Tuning_Log.csv"))
-    assert len(log) == 4 and set(log["data_mode"]) == {"full"} and log["val_macro_f1"].notna().all()
+    assert len(log) == 4 and log["val_macro_f1"].notna().all()
+    sample = json.load(open(os.path.join(tuning, "training_sample.json")))
+    assert set(log["train_rows"]) == {sample["sample_rows"]} and sample["sample_rows"] < sample["total_rows"]
+    assert not os.path.exists(os.path.join(tuning, "pilot.json"))  # the tests disable the pilot
     chosen = json.load(open(os.path.join(tuning, "chosen.json")))
     best = log.sort_values("val_macro_f1", ascending=False, kind="stable").iloc[0]
     assert chosen["val_macro_f1"] == pytest.approx(best["val_macro_f1"])
@@ -147,24 +150,73 @@ def test_b4_sample_weights_equal_m_class_weights():
     assert class_weights(labels, 6)[5] == 0 and np.mean(class_weights(labels, 6)[:5]) == pytest.approx(1.0)
 
 
-def test_b4_tuning_sample_is_uniform_and_fixed():
-    from dmoe.training.lightgbm_baseline import sample_indices
+def test_b4_capped_sample_keeps_small_classes_and_is_fixed():
+    from dmoe.training.lightgbm_baseline import capped_sample
 
-    labels = np.repeat(np.arange(4), [70_000, 20_000, 9_000, 1_000])
-    first = sample_indices(len(labels), 0.1, seed=0)
-    np.testing.assert_array_equal(first, sample_indices(len(labels), 0.1, seed=0))
-    assert len(first) == 10_000 and np.all(np.diff(first) > 0)
-    share = np.bincount(labels[first], minlength=4) / len(first)
-    np.testing.assert_allclose(share, [0.7, 0.2, 0.09, 0.01], atol=0.01)
+    labels = np.random.default_rng(3).permutation(np.repeat(np.arange(5), [70_000, 20_000, 9_000, 1_000, 30]))
+    first, summary = capped_sample(labels, 0.1, seed=0)
+    again, _ = capped_sample(labels, 0.1, seed=0)
+    np.testing.assert_array_equal(first, again)
+    assert np.all(np.diff(first) > 0) and len(first) <= 10_003
+    kept = np.bincount(labels[first], minlength=5)
+    cap = summary["cap_per_class"]
+    # the two smallest classes keep every row; the larger ones are capped at the same count
+    assert kept[3] == 1_000 and kept[4] == 30 and kept[0] == kept[1] == kept[2] == cap
+    assert 10_003 - 3 <= len(first) <= 10_003  # budget floor(0.1 * 100,030); the cap rounds down
+    other, _ = capped_sample(labels, 0.1, seed=1)
+    assert not np.array_equal(first, other)
+    whole, info = capped_sample(labels, 1.0, seed=0)
+    assert len(whole) == len(labels) and info["cap_per_class"] == 70_000
 
 
-def test_b4_default_data_mode_is_the_declared_rule():
+def test_b4_sample_weights_preserve_m_class_totals():
+    from dmoe.training.lightgbm_baseline import capped_sample, class_weights, sample_weights
+
+    labels = np.random.default_rng(4).permutation(np.repeat(np.arange(4), [50_000, 8_000, 900, 40]))
+    indices, _ = capped_sample(labels, 0.1, seed=0)
+    weights = sample_weights(labels, indices, 5)
+    base = class_weights(labels, 5)
+    for label in range(4):
+        total_full = base[label] * np.sum(labels == label)
+        assert weights[labels[indices] == label].sum() == pytest.approx(total_full)
+    # classes kept whole carry exactly M's per-row class weight
+    np.testing.assert_allclose(weights[labels[indices] == 3], base[3])
+    full, _ = capped_sample(labels, 1.0, seed=0)
+    np.testing.assert_allclose(sample_weights(labels, full, 5), base[labels])
+
+
+def test_b4_time_limit_stops_tuning_before_training(tmp_path):
+    from dmoe.training.campaign import load_campaign
+    from dmoe.training.config import load_config
+    from dmoe.training.lightgbm_baseline import PILOT_FILE, check_projected_time
+
+    config = load_config(load_campaign().entry("B4").config_path)
+    pilot = {"seconds_per_round": 100.0, "rows": 1000, "projected_hours_grid": 30.0}
+    (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
+    with pytest.raises(RuntimeError, match="above the declared 24 h limit"):
+        check_projected_time(config, None, str(tmp_path), None)
+    pilot["projected_hours_grid"] = 20.0
+    (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
+    assert check_projected_time(config, None, str(tmp_path), None)["projected_hours_grid"] == 20.0
+
+
+def test_b4_materialize_reads_sparse_indices():
+    from dmoe.training.lightgbm_baseline import _materialize
+
+    rows = np.arange(5_000 * 3, dtype=np.float32).reshape(5_000, 3)
+    indices = np.array([0, 7, 999, 1_000, 1_001, 2_500, 4_999])
+    np.testing.assert_array_equal(_materialize(rows, indices, chunk_rows=1_000), rows[indices])
+    np.testing.assert_array_equal(_materialize(rows, None, chunk_rows=1_000), rows)
+
+
+def test_b4_default_sample_and_time_rule_are_declared():
     from dmoe.training.campaign import load_campaign
     from dmoe.training.config import load_config
     from dmoe.training.lightgbm_baseline import grid_configs, lightgbm_settings
 
     settings = lightgbm_settings(load_config(load_campaign().entry("B4").config_path))
-    assert settings["tuning"]["data_mode"] == "auto" and settings["tuning"]["max_projected_hours"] == 24
+    assert settings["tuning"]["max_projected_hours"] == 24 and settings["tuning"]["pilot_rounds"] == 20
+    assert settings["training_sample"] == {"target_fraction": 0.1, "seed": 0}
     assert grid_configs(settings) == [
         {"learning_rate": 0.05, "num_leaves": 63}, {"learning_rate": 0.05, "num_leaves": 255},
         {"learning_rate": 0.1, "num_leaves": 63}, {"learning_rate": 0.1, "num_leaves": 255},
@@ -176,7 +228,8 @@ def test_b4_forbidden_settings_are_rejected():
     from dmoe.training.lightgbm_baseline import lightgbm_settings
 
     base = {"params": {"objective": "multiclass"}, "grid": {}, "max_rounds": 10, "eval_every_rounds": 10,
-            "patience_rounds": 10, "chunk_rounds": 10, "tuning": {}}
+            "patience_rounds": 10, "chunk_rounds": 10, "tuning": {},
+                "training_sample": {"target_fraction": 0.1, "seed": 0}}
     for key in ("is_unbalance", "class_weight", "boosting"):
         with pytest.raises(ValueError, match="forbids"):
             lightgbm_settings({"lightgbm": {**base, "params": {key: "x"}}})

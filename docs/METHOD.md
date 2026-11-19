@@ -69,8 +69,8 @@ B2 and B3 start from M's Stage-A encoder of the same seed; B4 uses nothing from 
   balancing). At prediction every row goes to exactly one expert, the router's
   argmax.
 * **B4 pooled LightGBM (trees; no parameter count).** One gradient-boosted
-  tree model (LightGBM, multiclass, CPU) trained on all pooled training rows,
-  dataset-blind. Its size is reported as trees and leaves next to its results.
+  tree model (LightGBM, multiclass, CPU) trained on a fixed class-capped,
+  reweighted sample of the pooled training rows (see below), dataset-blind. Its size is reported as trees and leaves next to its results.
 
 ### B4 fairness contract
 
@@ -78,17 +78,18 @@ B4 gets nothing M does not get. Anything not listed is not used.
 
 | Aspect | M | B4 |
 |---|---|---|
-| Training rows | all pooled training rows, natural class distribution | the same rows |
+| Training rows | all pooled training rows, natural class distribution | one fixed class-capped sample of the same rows (about 10%), reweighted so each class keeps its total weight (below) |
 | Inputs | the 47 prepared features (median imputed, standardized), no dataset ID | the same prepared feature arrays, no dataset ID |
-| Class weighting | square-root inverse frequency, normalized to mean 1, on the pooled training rows | the same weights from the same function, as per-row sample weights |
-| Resampling | none | none |
+| Class weighting | square-root inverse frequency, normalized to mean 1, on the pooled training rows | the same weights from the same function on all pooled training rows, as per-row sample weights, times the sampling correction n_c / k_c |
+| Resampling | none | none beyond the declared training sample |
 | Model selection | best validation macro-F1 epoch (Stage C, patience 5) | best validation macro-F1 boosting round (checked every 10 rounds, patience 50 rounds, at most 2,000 rounds) |
 | Stochastic regularization | dropout 0.2 | row and feature subsampling 0.8 (fixed, not tuned) |
 | Tuning on validation | settled in development (see below) | a grid of 4 configurations, once |
 | Prediction | argmax of class probabilities | argmax of class probabilities |
 
 Not allowed for B4: dataset ID or anything derived from it, feature
-engineering, oversampling or undersampling, `is_unbalance` or `class_weight`
+engineering, oversampling or undersampling other than the declared training
+sample, `is_unbalance` or `class_weight`
 beyond the sample weights above, focal or custom losses, DART, per-class
 thresholds, probability calibration. The code rejects the corresponding
 LightGBM settings.
@@ -99,18 +100,38 @@ Fixed LightGBM settings: `objective: multiclass`, `max_bin` 255,
 seeds are derived from the campaign seed (this is what makes B4's seeds
 differ). Everything else is at LightGBM's defaults.
 
+Training sample. On all 46.9M pooled training rows, a 22-class LightGBM run
+did not fit in the memory of a Colab CPU high-RAM runtime (it keeps a score,
+a gradient and a hessian per row and class), and its training time would far
+exceed the compute budget of the other conditions. Every B4 run (tuning and all seeds) uses one fixed sample of about 10% of the
+training rows, drawn once with seed 0:
+
+* A per-class cap K is the largest count for which the sample stays within
+  10% of the training rows. Classes with at most K rows keep every row;
+  larger classes keep K rows drawn uniformly without replacement.
+* A kept row of class c with n_c training rows, k_c of them kept, gets M's
+  class weight times n_c / k_c. Each class therefore keeps exactly its total
+  weight under M's loss, and the weighted training loss is an unbiased
+  estimate of the loss M trains on. Classes kept whole get exactly M's weight.
+* Validation and test are complete; selection and evaluation do not change.
+* The per-class counts, kept rows and multipliers are recorded in
+  `runs/B4/tuning/training_sample.json`.
+
+This keeps every row of the rare attack classes that dominate macro-F1 and
+thins only the large classes.
+
 Tuning protocol (pre-registered in `configs/baselines/B4_pooled_lightgbm.yaml`):
 
 * Grid: `num_leaves` in {63, 255} x `learning_rate` in {0.05, 0.1}, trained
   once with seed 0 on the fixed split. The configuration with the highest
   validation macro-F1 is used unchanged for every seed (ties go to the earlier
   configuration). Test data is never read during tuning.
-* Data for the grid: all training rows, unless a timing pilot (20 rounds of the
-  largest configuration) projects the whole grid above 24 hours; then the grid
-  runs on a fixed uniform 10% sample of the training rows (natural class
-  distribution, weights recomputed with the same function). The decision and
-  its measurements are recorded in `runs/B4/tuning/data_mode.json`. The seed
-  runs always use all training rows.
+* Time limit: before the grid, a timing pilot (20 rounds of the largest
+  configuration on the training sample) projects the whole grid. Above 24
+  hours, tuning stops before training anything and the setting is revisited
+  by the author; the pilot's measurements are recorded in
+  `runs/B4/tuning/pilot.json`. The grid and the seed runs use the same
+  training sample.
 * If the chosen configuration's best round lies within the last 50 rounds of
   the 2,000-round cap, the seed runs use a 4,000-round cap instead, so training
   length never limits B4.

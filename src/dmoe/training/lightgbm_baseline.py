@@ -1,23 +1,25 @@
 """Baseline B4: one pooled LightGBM model, trained on CPU, dataset-blind.
 
-Fairness contract with M (see docs/METHOD.md): the same pooled training rows,
-the same 47 prepared (median-imputed, standardized) features, no dataset
-identity, the same square-root inverse-frequency class weights (as per-row
-sample weights, computed by the same function), no resampling, and model
-selection by validation macro-F1 (the best boosting round, like M's best
-Stage-C epoch).
+Fairness contract with M (see docs/METHOD.md): the same pooled training rows
+(for compute, every B4 run uses one fixed class-capped sample of them that
+keeps every row of the smaller classes and reweights the thinned ones so the
+weighted training loss equals M's in expectation), the same 47 prepared
+(median-imputed, standardized) features, no dataset identity, the same
+square-root inverse-frequency class weights (as per-row sample weights,
+computed by the same function on all training rows), and model selection by
+validation macro-F1 (the best boosting round, like M's best Stage-C epoch).
 
 Two kinds of unit:
 
 * **Tuning** (``runs/B4/tuning/``), once, before the first B4 seed: every
   configuration of the grid trains with the tuning seed; the one with the
   highest validation macro-F1 is written to ``chosen.json`` and used
-  unchanged for every seed. With ``tuning.data_mode: auto`` a short timing
-  pilot decides whether the grid runs on all training rows or, when the
-  projected grid time exceeds ``tuning.max_projected_hours``, on a fixed
-  uniform sample. The decision is recorded.
-* **Seed runs** (``runs/B4/seed<k>/``): the chosen configuration on all
-  training rows.
+  unchanged for every seed. A short timing pilot first projects the grid
+  time; above ``tuning.max_projected_hours`` tuning stops before training
+  (a decision for the author, not an automatic fallback). The pilot's
+  measurements are recorded.
+* **Seed runs** (``runs/B4/seed<k>/``): the chosen configuration on the same
+  training sample.
 
 Every run trains in fixed chunks of ``chunk_rounds`` rounds, each continued
 from the saved model, so a run interrupted by a disconnect resumes at the
@@ -49,7 +51,8 @@ STATE_FILE = "progress.json"
 PROGRESS_MODEL_FILE = "model_progress.txt"
 TUNING_LOG_FILE = "Tuning_Log.csv"
 CHOSEN_FILE = "chosen.json"
-DATA_MODE_FILE = "data_mode.json"
+PILOT_FILE = "pilot.json"
+SAMPLE_FILE = "training_sample.json"
 CHECKS_FILE = "Validation_Checks.csv"
 
 
@@ -63,7 +66,8 @@ def _lgb():
 
 def lightgbm_settings(config: dict) -> dict:
     values = copy.deepcopy(config.get("lightgbm") or {})
-    required = ("params", "grid", "max_rounds", "eval_every_rounds", "patience_rounds", "chunk_rounds", "tuning")
+    required = ("params", "grid", "max_rounds", "eval_every_rounds", "patience_rounds", "chunk_rounds", "tuning",
+                "training_sample")
     missing = [key for key in required if key not in values]
     if missing:
         raise ValueError(f"lightgbm config is missing {missing}")
@@ -74,6 +78,9 @@ def lightgbm_settings(config: dict) -> dict:
     forbidden = {"is_unbalance", "class_weight", "scale_pos_weight", "boosting", "boosting_type"} & set(values["params"])
     if forbidden:
         raise ValueError(f"B4 forbids {sorted(forbidden)} (fairness contract; see docs/METHOD.md)")
+    fraction = float(values["training_sample"]["target_fraction"])
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("lightgbm.training_sample.target_fraction must be in (0, 1]")
     return values
 
 
@@ -143,13 +150,64 @@ def class_weights(labels: np.ndarray, num_classes: int) -> np.ndarray:
     return _loss_weights(labels, num_classes, "cpu").numpy().astype(np.float64)
 
 
-def sample_indices(total_rows: int, fraction: float, seed: int) -> np.ndarray:
-    """A fixed uniform sample of row indices (natural class distribution), sorted."""
-    size = int(round(total_rows * float(fraction)))
-    if not 0 < size <= total_rows:
-        raise ValueError(f"sample fraction {fraction} gives {size} of {total_rows} rows")
-    rng = np.random.default_rng(seed)
-    return np.sort(rng.choice(total_rows, size=size, replace=False))
+def capped_sample(labels: np.ndarray, target_fraction: float, seed: int) -> tuple[np.ndarray, dict]:
+    """A fixed class-capped sample of training rows and its per-class reweighting.
+
+    The cap K is the largest per-class row count for which ``sum_c min(n_c, K)``
+    stays within ``target_fraction`` of all rows: classes with at most K rows
+    keep every row, larger classes keep K rows drawn uniformly without
+    replacement (seeded). Each kept row of class c is weighted by n_c / k_c on
+    top of M's class weight, so every class keeps its total weight and the
+    weighted training loss equals the full-data loss in expectation.
+
+    Returns the sorted row indices and a summary with per-class counts.
+    """
+    labels = np.asarray(labels)
+    total = len(labels)
+    counts = np.bincount(labels).astype(np.int64)
+    present = np.flatnonzero(counts)
+    budget = int(np.floor(total * float(target_fraction)))
+    if budget < len(present):
+        raise ValueError(f"training sample of {budget} rows cannot hold every class ({len(present)} classes)")
+    cap = int(counts.max())
+    if budget < total:
+        ordered = np.sort(counts[present])
+        remaining = budget
+        for position, count in enumerate(ordered):
+            left = len(ordered) - position
+            if int(count) * left > remaining:
+                cap = remaining // left
+                break
+            remaining -= int(count)
+    rng = np.random.default_rng(int(seed))
+    chosen = []
+    kept = np.zeros_like(counts)
+    for label in present:
+        rows = np.flatnonzero(labels == label)
+        if len(rows) > cap:
+            rows = np.sort(rng.choice(rows, size=cap, replace=False))
+        kept[label] = len(rows)
+        chosen.append(rows)
+    indices = np.sort(np.concatenate(chosen))
+    multiplier = np.zeros(len(counts), dtype=np.float64)
+    multiplier[present] = counts[present] / kept[present]
+    summary = {
+        "target_fraction": float(target_fraction), "seed": int(seed), "cap_per_class": int(cap),
+        "total_rows": int(total), "sample_rows": int(len(indices)),
+        "classes": {int(c): {"rows": int(counts[c]), "kept": int(kept[c]), "weight_multiplier": float(multiplier[c])}
+                    for c in present},
+    }
+    return indices, summary
+
+
+def sample_weights(labels: np.ndarray, indices: np.ndarray, num_classes: int) -> np.ndarray:
+    """Per-row weights of the sampled rows: M's class weight (on all rows) times n_c / k_c."""
+    labels = np.asarray(labels)
+    base = class_weights(labels, num_classes)
+    counts = np.bincount(labels, minlength=num_classes).astype(np.float64)
+    kept = np.bincount(labels[indices], minlength=num_classes).astype(np.float64)
+    multiplier = np.divide(counts, kept, out=np.zeros_like(counts), where=kept > 0)
+    return (base * multiplier)[labels[indices]]
 
 
 def _dataset_params(settings: dict, num_threads: int) -> dict:
@@ -167,44 +225,52 @@ def num_threads() -> int:
 
 
 def _materialize(rows, indices: np.ndarray | None = None, chunk_rows: int = 1_000_000) -> np.ndarray:
-    """Standardized float32 rows (all, or the sorted ``indices``) as one in-memory array."""
+    """Standardized float32 rows (all, or the sorted ``indices``) as one in-memory array.
+
+    Reads the source in fixed windows of ``chunk_rows`` rows, so memory stays
+    bounded however sparse the indices are.
+    """
     count = len(rows) if indices is None else len(indices)
     out = np.empty((count, rows.shape[1]), dtype=np.float32)
-    for start in range(0, count, chunk_rows):
-        stop = min(start + chunk_rows, count)
+    written = 0
+    for start in range(0, len(rows), chunk_rows):
+        stop = min(start + chunk_rows, len(rows))
         if indices is None:
             out[start:stop] = rows[start:stop]
-        else:
-            wanted = indices[start:stop]
-            block = rows[int(wanted[0]): int(wanted[-1]) + 1]
-            out[start:stop] = block[wanted - wanted[0]]
+            continue
+        low, high = np.searchsorted(indices, [start, stop])
+        if high > low:
+            block = np.asarray(rows[start:stop])
+            out[written: written + high - low] = block[indices[low:high] - start]
+            written += high - low
     return out
 
 
 class PreparedArrays:
     """In-memory training and validation arrays; ``datasets()`` gives fresh ``lgb.Dataset`` objects.
 
-    LightGBM continues a chunk from a saved model by predicting the kept raw
-    rows, so the rows stay in memory (``free_raw_data=False``). Each run gets
-    its own Dataset objects; bin boundaries are deterministic.
+    The training rows are the fixed class-capped sample (``capped_sample``);
+    validation is complete. LightGBM continues a chunk from a saved model by
+    predicting the kept raw rows, so the rows stay in memory
+    (``free_raw_data=False``). Each run gets its own Dataset objects; bin
+    boundaries are deterministic.
     """
 
-    def __init__(self, config: dict, context: OutOfCoreContext, mode: str):
+    def __init__(self, config: dict, context: OutOfCoreContext):
         settings = lightgbm_settings(config)
+        sample = settings["training_sample"]
         data = context.data
-        indices = None
-        if mode == "sample":
-            indices = sample_indices(len(data.train.class_idx), settings["tuning"]["sample_fraction"],
-                                     int(context.split_seed))
-        elif mode != "full":
-            raise ValueError(f"unknown B4 data mode {mode!r}")
         started = time.monotonic()
-        self.mode = mode
+        all_labels = _labels(data.train)
+        indices, self.sample_summary = capped_sample(all_labels, float(sample["target_fraction"]), int(sample["seed"]))
         self.feature_columns = list(context.feature_columns)
         self.dataset_params = _dataset_params(settings, num_threads())
-        self.y = _labels(data.train, indices)
-        self.weights = class_weights(self.y, len(data.class_names))[self.y]
-        print(f"[B4] loading {len(self.y):,} training rows ({mode}) into memory", flush=True)
+        self.y = all_labels[indices]
+        self.weights = sample_weights(all_labels, indices, len(data.class_names))
+        del all_labels
+        print(f"[B4] loading the class-capped training sample: {len(self.y):,} of "
+              f"{self.sample_summary['total_rows']:,} rows (cap {self.sample_summary['cap_per_class']:,} per class)",
+              flush=True)
         self.x = _materialize(data.train.features, indices)
         self.y_val = _labels(data.val)
         self.x_val = _materialize(data.val.features)
@@ -427,7 +493,7 @@ def assert_dataset_blind_booster(booster, feature_columns: list[str]) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Cost measurement, data mode decision, tuning and seed runs
+# Cost measurement, time limit, tuning and seed runs
 
 
 def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays, *, rounds: int) -> dict:
@@ -491,30 +557,31 @@ def measure_cost(config: dict, context: OutOfCoreContext, arrays: PreparedArrays
     }
 
 
-def decide_data_mode(config: dict, context: OutOfCoreContext, directory: str) -> dict:
-    """Apply the declared rule once and record it: full rows unless the grid projection exceeds the limit."""
-    path = os.path.join(directory, DATA_MODE_FILE)
-    if os.path.isfile(path):
-        return _read_json(path)
+def check_projected_time(config: dict, context: OutOfCoreContext, directory: str,
+                         arrays: "PreparedArrays") -> dict | None:
+    """Run the timing pilot once (on the training sample) and apply the declared time limit.
+
+    With ``tuning.max_projected_hours: null`` there is no pilot. Above the
+    limit, tuning stops before training anything: the author decides.
+    """
     tuning = lightgbm_settings(config)["tuning"]
-    requested = tuning.get("data_mode", "auto")
-    decision = {"requested": requested, "max_projected_hours": float(tuning["max_projected_hours"])}
-    if requested in {"full", "sample"}:
-        decision["mode"] = requested
-    elif requested == "auto":
-        arrays = PreparedArrays(config, context, "full")
-        cost = measure_cost(config, context, arrays, rounds=int(tuning.get("pilot_rounds", 20)))
-        del arrays
-        decision.update(cost)
-        decision["mode"] = "full" if cost["projected_hours_grid"] <= decision["max_projected_hours"] else "sample"
-        print(f"[B4 tuning] projected grid time {cost['projected_hours_grid']:.1f} h on all rows "
-              f"(limit {decision['max_projected_hours']:.0f} h): tuning on {decision['mode']} rows", flush=True)
+    limit = tuning.get("max_projected_hours")
+    if limit is None:
+        return None
+    path = os.path.join(directory, PILOT_FILE)
+    if os.path.isfile(path):
+        pilot = _read_json(path)
     else:
-        raise ValueError("lightgbm.tuning.data_mode must be auto, full or sample")
-    if decision["mode"] == "sample":
-        decision["sample_fraction"] = float(tuning["sample_fraction"])
-    _write_json(decision, path)
-    return decision
+        pilot = measure_cost(config, context, arrays, rounds=int(tuning.get("pilot_rounds", 20)))
+        pilot["max_projected_hours"] = float(limit)
+        _write_json(pilot, path)
+    print(f"[B4 tuning] pilot: {pilot['seconds_per_round']:.1f} s per round on {pilot['rows']:,} rows; projected grid "
+          f"time {pilot['projected_hours_grid']:.1f} h (limit {float(limit):.0f} h)", flush=True)
+    if pilot["projected_hours_grid"] > float(limit):
+        raise RuntimeError(
+            f"B4 tuning projected at {pilot['projected_hours_grid']:.1f} h, above the declared "
+            f"{float(limit):.0f} h limit; nothing was trained. See {path}.")
+    return pilot
 
 
 def run_tuning(config: dict, context: OutOfCoreContext, condition: str, output_root: str | None = None) -> dict:
@@ -530,8 +597,9 @@ def run_tuning(config: dict, context: OutOfCoreContext, condition: str, output_r
     if os.path.isfile(marker) and _read_json(marker).get("signature") != signature:
         raise ValueError(f"{directory} holds tuning for different B4 settings; move it away to retune")
     _write_json({"signature": signature}, marker)
-    decision = decide_data_mode(config, context, directory)
-    arrays = None
+    arrays = PreparedArrays(config, context)
+    _write_json(arrays.sample_summary, os.path.join(directory, SAMPLE_FILE))
+    check_projected_time(config, context, directory, arrays)
     seed = int(settings["tuning"]["seed"])
     num_classes = len(context.data.class_names)
     log_path = os.path.join(directory, TUNING_LOG_FILE)
@@ -542,16 +610,13 @@ def run_tuning(config: dict, context: OutOfCoreContext, condition: str, output_r
         if config_id in done:
             continue
         params = training_params(settings, values, seed, num_classes)
-        if arrays is None:
-            arrays = PreparedArrays(config, context, decision["mode"])
         state = train_booster(
             params, arrays, max_rounds=int(settings["max_rounds"]),
             eval_every=int(settings["eval_every_rounds"]), patience=int(settings["patience_rounds"]),
             chunk_rounds=int(settings["chunk_rounds"]), state_dir=os.path.join(directory, config_id),
             label=f"tuning {config_id}",
         )
-        row = {"config_id": config_id, **values, "seed": seed, "data_mode": decision["mode"],
-               "train_rows": arrays.rows, "best_round": state["best_round"],
+        row = {"config_id": config_id, **values, "seed": seed, "train_rows": arrays.rows, "best_round": state["best_round"],
                "val_macro_f1": state["best_val_macro_f1"], "rounds_trained": state["rounds_done"],
                "stopped_early": state["stopped_early"], "wall_seconds": state["wall_seconds"]}
         log = pd.concat([log, pd.DataFrame([row])], ignore_index=True)
@@ -570,7 +635,7 @@ def run_tuning(config: dict, context: OutOfCoreContext, condition: str, output_r
         "val_macro_f1": float(best["val_macro_f1"]),
         "best_round": int(best["best_round"]),
         "tuning_seed": seed,
-        "data_mode": decision["mode"],
+        "train_rows": int(arrays.rows),
         "seed_max_rounds": int(settings["extended_max_rounds"]) if near_cap else max_rounds,
         "cap_extended": bool(near_cap),
         "rule": "highest validation macro-F1; ties to the earlier grid configuration",
@@ -583,7 +648,7 @@ def run_tuning(config: dict, context: OutOfCoreContext, condition: str, output_r
 
 
 def train_lightgbm_unit(config: dict, context: OutOfCoreContext) -> LightGBMModel:
-    """One B4 seed: the chosen configuration on all training rows."""
+    """One B4 seed: the chosen configuration on the class-capped training sample."""
     settings = lightgbm_settings(config)
     run = config["run"]
     condition, seed = run["condition"], int(run["seed"])
@@ -597,7 +662,7 @@ def train_lightgbm_unit(config: dict, context: OutOfCoreContext) -> LightGBMMode
     state_dir = os.path.join(checkpoint_dir, "lightgbm")
     max_rounds = int(chosen["seed_max_rounds"])
     reusable = os.path.join(tuning_dir(condition, run["output_root"]), chosen["config_id"])
-    if (not os.path.isdir(state_dir) and seed == int(chosen["tuning_seed"]) and chosen["data_mode"] == "full"
+    if (not os.path.isdir(state_dir) and seed == int(chosen["tuning_seed"])
             and max_rounds == int(settings["max_rounds"]) and os.path.isfile(os.path.join(reusable, STATE_FILE))
             and _read_json(os.path.join(reusable, STATE_FILE)).get("finished")):
         # Same parameters, data and seed as the chosen tuning run: identical result, so reuse it.
@@ -606,12 +671,12 @@ def train_lightgbm_unit(config: dict, context: OutOfCoreContext) -> LightGBMMode
     if not os.path.isfile(final_path):
         state_file = os.path.join(state_dir, STATE_FILE)
         finished = os.path.isfile(state_file) and _read_json(state_file).get("finished")
-        arrays = None if finished else PreparedArrays(config, context, "full")
+        arrays = None if finished else PreparedArrays(config, context)
 
         def on_check(check, state):
             append_training_history(config, {
                 "stage": "C", "encoder_role": "lightgbm", "dataset": "ALL", "epoch": check["round"],
-                "objective": "boosting", "rows": len(context.data.train.class_idx),
+                "objective": "boosting", "rows": int(arrays.rows),
                 "val_macro_f1": check["val_macro_f1"], "best_val_macro_f1": state["best_val_macro_f1"],
                 "improved": check["round"] == state["best_round"],
                 "patience_left": int(settings["patience_rounds"]) - (check["round"] - state["best_round"]),

@@ -111,15 +111,17 @@ inference cost (`test_inference_wall_seconds`, `test_inference_rows_per_second`,
 For B4 the parameter and MAC columns read `n/a`; instead it reports
 `lightgbm_trees`, `lightgbm_total_leaves`, `lightgbm_best_round`,
 `lightgbm_rounds_trained`, `lightgbm_model_bytes`, `lightgbm_chosen` (the tuned
-configuration), `lightgbm_tuning_data_mode` and `lightgbm_threads`; its `C_*`
+configuration), `lightgbm_train_rows` (rows of the training sample) and `lightgbm_threads`; its `C_*`
 training columns describe the boosting run (`C_epochs_completed` = rounds
 trained, `C_selected_epoch` = best round). The manifest has
 `total_parameters: null` and a `model_size` block with the tree counts.
 
 ### B4 tuning: `runs/B4/tuning/`
-`data_mode.json` (the declared rule's decision: pilot seconds per round,
-projected grid hours, `mode` full or sample), `Tuning_Log.csv` (`config_id,
-learning_rate, num_leaves, seed, data_mode, train_rows, best_round,
+`training_sample.json` (the class-capped sample: `target_fraction`, `seed`,
+`cap_per_class`, `total_rows`, `sample_rows` and per class `rows`, `kept`,
+`weight_multiplier`), `pilot.json` (the timing pilot: seconds per round, rows,
+projected grid hours, peak memory, the limit), `Tuning_Log.csv` (`config_id,
+learning_rate, num_leaves, seed, train_rows, best_round,
 val_macro_f1, rounds_trained, stopped_early, wall_seconds`), `chosen.json`
 (chosen configuration, its validation macro-F1 and best round,
 `seed_max_rounds`, `cap_extended`, the rule) and one folder per configuration
