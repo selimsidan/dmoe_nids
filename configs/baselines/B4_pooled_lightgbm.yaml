@@ -21,6 +21,11 @@ overrides:
     params:
       objective: multiclass
       max_bin: 255
+      # L2 penalty on leaf values (fixed, not tuned). Without it, leaves whose
+      # rows are already confidently classified have near-zero hessians and
+      # output huge values, and multiclass training diverges within tens of
+      # rounds (LightGBM's default is 0).
+      lambda_l2: 1.0
       feature_fraction: 0.8
       bagging_fraction: 0.8
       bagging_freq: 1
@@ -36,7 +41,7 @@ overrides:
     # `patience_rounds` of max_rounds during tuning, the seed runs use this cap.
     extended_max_rounds: 4000
     eval_every_rounds: 10
-    patience_rounds: 50
+    patience_rounds: 200
     # Every run trains in one pass and saves a checkpoint every
     # checkpoint_rounds rounds; after a disconnect it resumes from the last one.
     checkpoint_rounds: 200
@@ -48,6 +53,11 @@ overrides:
     training_sample:
       target_fraction: 0.1
       seed: 0
+    # After tuning: the chosen configuration (tuning seed) retrained on other
+    # training-sample sizes, to show whether more training rows would still
+    # improve B4. Validation and test macro-F1 are reported; nothing is selected.
+    sample_sensitivity:
+      fractions: [0.025, 0.05, 0.2]
     tuning:
       seed: 0
       # A timing pilot (pilot_rounds of the largest configuration on the

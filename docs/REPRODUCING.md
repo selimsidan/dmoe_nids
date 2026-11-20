@@ -30,6 +30,7 @@ python scripts/run_campaign.py --only M --seeds 3 4 --execute
 python scripts/run_campaign.py --only B2 B3 --execute --runs-per-session 1
 python scripts/run_campaign.py --only B4 --execute         # CPU runtime with high RAM
 python scripts/lightgbm_pilot.py                           # B4 timing pilot; writes no results
+python scripts/lightgbm_sample_sensitivity.py              # after B4 tuning: 2.5%, 5%, 20% samples
 ```
 
 Without `--execute` nothing is trained. A unit whose parent is missing is
@@ -144,6 +145,7 @@ of each run records training and inference time; B4's tuning log
 ```bash
 python scripts/aggregate.py              # OUTPUT_ROOT/summary/
 python scripts/make_paper_tables.py      # OUTPUT_ROOT/paper/
+python scripts/bias_tuning.py            # supplementary: per-class offsets tuned on validation
 python scripts/sync_results.py           # copy small result files into results/ and paper/
 python scripts/publish_hub.py            # dry run of the Hugging Face upload (needs hub.repo_id)
 ```

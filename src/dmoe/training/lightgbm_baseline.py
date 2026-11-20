@@ -56,6 +56,8 @@ CHOSEN_FILE = "chosen.json"
 PILOT_FILE = "pilot.json"
 SAMPLE_FILE = "training_sample.json"
 CHECKS_FILE = "Validation_Checks.csv"
+SENSITIVITY_DIR = "sample_sensitivity"
+SENSITIVITY_FILE = "Sample_Sensitivity.csv"
 
 
 def _lgb():
@@ -113,6 +115,7 @@ def tuning_dir(condition: str, output_root: str | None = None) -> str:
 def tuning_signature(config: dict, context_signatures: dict | None = None) -> str:
     """What the tuning result depends on: the B4 settings, the data and the split."""
     settings = lightgbm_settings(config)
+    settings.pop("sample_sensitivity", None)  # a post-hoc analysis; does not affect tuning or seed runs
     payload = {
         "lightgbm": settings,
         "data": {k: v for k, v in config.get("data", {}).items() if k not in {"display_names"}},
@@ -676,22 +679,23 @@ def train_lightgbm_unit(config: dict, context: OutOfCoreContext) -> LightGBMMode
         state_file = os.path.join(state_dir, STATE_FILE)
         finished = os.path.isfile(state_file) and _read_json(state_file).get("finished")
         arrays = None if finished else PreparedArrays(config, context)
-
-        def on_check(check, state):
-            append_training_history(config, {
-                "stage": "C", "encoder_role": "lightgbm", "dataset": "ALL", "epoch": check["round"],
-                "objective": "boosting", "rows": int(arrays.rows),
-                "val_macro_f1": check["val_macro_f1"], "best_val_macro_f1": state["best_val_macro_f1"],
-                "improved": check["round"] == state["best_round"],
-                "patience_left": int(settings["patience_rounds"]) - (check["round"] - state["best_round"]),
-            })
-
         state = train_booster(
             params, arrays, max_rounds=max_rounds,
             eval_every=int(settings["eval_every_rounds"]), patience=int(settings["patience_rounds"]),
             checkpoint_rounds=int(settings["checkpoint_rounds"]), state_dir=state_dir, label=f"seed {seed}",
-            on_check=on_check,
         ) if not finished else _read_json(state_file)
+        # Training history from the run's validation checks (also when the tuning run was reused).
+        best_so_far, best_round = None, None
+        for check in state["checks"]:
+            if best_so_far is None or check["val_macro_f1"] > best_so_far + 1e-12:
+                best_so_far, best_round = check["val_macro_f1"], check["round"]
+            append_training_history(config, {
+                "stage": "C", "encoder_role": "lightgbm", "dataset": "ALL", "epoch": check["round"],
+                "objective": "boosting", "rows": int(chosen["train_rows"]),
+                "val_macro_f1": check["val_macro_f1"], "best_val_macro_f1": best_so_far,
+                "improved": check["round"] == best_round,
+                "patience_left": int(settings["patience_rounds"]) - (check["round"] - best_round),
+            })
         text = final_model_text(state_dir, state["best_round"])
         os.makedirs(os.path.dirname(final_path), exist_ok=True)
         with open(final_path + ".tmp", "w") as handle:
@@ -712,6 +716,88 @@ def train_lightgbm_unit(config: dict, context: OutOfCoreContext) -> LightGBMMode
     model.training_summary = {"C": summary["training_summary"]}
     model.lightgbm_info = summary.get("lightgbm", {})
     return model
+
+
+def split_macro_f1(model_text: str, split, num_classes: int, chunk_rows: int = 1_000_000) -> float:
+    """Macro-F1 (the evaluation definition) of a LightGBM model on a whole prepared split."""
+    from ..evaluation.metrics import overall_from_confusion
+
+    booster = _lgb().Booster(model_str=model_text)
+    confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+    total = len(split.class_idx)
+    for start in range(0, total, chunk_rows):
+        stop = min(start + chunk_rows, total)
+        x = np.asarray(split.features[start:stop], dtype=np.float32)
+        prediction = np.asarray(booster.predict(x, num_threads=num_threads())).reshape(len(x), num_classes).argmax(1)
+        truth = np.asarray(split.class_idx[start:stop], dtype=np.int64)
+        confusion += confusion_from_predictions(truth, prediction, num_classes)
+    return float(overall_from_confusion(confusion)["macro_f1"])
+
+
+def run_sample_sensitivity(config: dict, context: OutOfCoreContext, condition: str,
+                           output_root: str | None = None) -> pd.DataFrame:
+    """Retrain B4's chosen configuration (tuning seed) on other training-sample sizes.
+
+    Reports, per sample fraction, the best validation macro-F1, its round and
+    the test macro-F1 of that model. The main fraction reuses the chosen
+    tuning run. Nothing is selected from these results. Resumable: finished
+    fractions are skipped.
+    """
+    settings = lightgbm_settings(config)
+    chosen = read_chosen(condition, output_root)
+    if not chosen or chosen.get("tuning_config_signature") != tuning_signature(config):
+        raise RuntimeError(f"{condition} tuning is missing or outdated; run the campaign first")
+    directory = os.path.join(output_root or paths.output_root(), "runs", condition, SENSITIVITY_DIR)
+    os.makedirs(directory, exist_ok=True)
+    marker = os.path.join(directory, "sensitivity_signature.json")
+    signature = chosen["tuning_config_signature"]
+    if os.path.isfile(marker) and _read_json(marker).get("signature") != signature:
+        raise ValueError(f"{directory} belongs to different B4 settings; move it away to recompute")
+    _write_json({"signature": signature}, marker)
+    path = os.path.join(directory, SENSITIVITY_FILE)
+    table = pd.read_csv(path) if os.path.isfile(path) else pd.DataFrame()
+    done = set(np.round(table["target_fraction"], 6)) if not table.empty else set()
+    main = float(settings["training_sample"]["target_fraction"])
+    fractions = sorted({main, *(float(f) for f in (settings.get("sample_sensitivity") or {}).get("fractions", []))})
+    num_classes = len(context.data.class_names)
+    seed = int(chosen["tuning_seed"])
+    params = training_params(settings, chosen["chosen"], seed, num_classes)
+    for fraction in fractions:
+        if round(fraction, 6) in done:
+            continue
+        if fraction == main:
+            state_dir = os.path.join(tuning_dir(condition, output_root), chosen["config_id"])
+            state = _read_json(os.path.join(state_dir, STATE_FILE))
+            rows = int(chosen["train_rows"])
+        else:
+            variant = copy.deepcopy(config)
+            variant["lightgbm"]["training_sample"]["target_fraction"] = fraction
+            state_dir = os.path.join(directory, f"fraction-{fraction:g}")
+            arrays = PreparedArrays(variant, context)
+            rows = int(arrays.rows)
+            state = train_booster(
+                params, arrays, max_rounds=int(settings["max_rounds"]),
+                eval_every=int(settings["eval_every_rounds"]), patience=int(settings["patience_rounds"]),
+                checkpoint_rounds=int(settings["checkpoint_rounds"]), state_dir=state_dir,
+                label=f"sample {fraction:g}",
+            )
+            del arrays
+        text = final_model_text(state_dir, state["best_round"])
+        print(f"[B4 sample {fraction:g}] scoring the test split", flush=True)
+        row = {
+            "target_fraction": fraction, "main": fraction == main, "train_rows": rows, "seed": seed,
+            "config_id": chosen["config_id"], "best_round": int(state["best_round"]),
+            "val_macro_f1": float(state["best_val_macro_f1"]),
+            "test_macro_f1": split_macro_f1(text, context.data.test, num_classes),
+            "rounds_trained": int(state["rounds_done"]), "stopped_early": bool(state["stopped_early"]),
+            "wall_seconds": float(state["wall_seconds"]),
+        }
+        table = pd.concat([table, pd.DataFrame([row])], ignore_index=True).sort_values("target_fraction")
+        table.to_csv(path + ".tmp", index=False)
+        os.replace(path + ".tmp", path)
+        print(f"[B4 sample {fraction:g}] {rows:,} rows: val_macro_f1={row['val_macro_f1']:.4f} "
+              f"test_macro_f1={row['test_macro_f1']:.4f} (round {row['best_round']})", flush=True)
+    return table
 
 
 def lightgbm_version() -> str | None:

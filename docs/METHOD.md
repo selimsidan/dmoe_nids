@@ -82,8 +82,8 @@ B4 gets nothing M does not get. Anything not listed is not used.
 | Inputs | the 47 prepared features (median imputed, standardized), no dataset ID | the same prepared feature arrays, no dataset ID |
 | Class weighting | square-root inverse frequency, normalized to mean 1, on the pooled training rows | the same weights from the same function on all pooled training rows, as per-row sample weights, times the sampling correction n_c / k_c |
 | Resampling | none | none beyond the declared training sample |
-| Model selection | best validation macro-F1 epoch (Stage C, patience 5) | best validation macro-F1 boosting round (checked every 10 rounds, patience 50 rounds, at most 2,000 rounds) |
-| Stochastic regularization | dropout 0.2 | row and feature subsampling 0.8 (fixed, not tuned) |
+| Model selection | best validation macro-F1 epoch (Stage C, patience 5) | best validation macro-F1 boosting round (checked every 10 rounds, patience 200 rounds, at most 2,000 rounds) |
+| Regularization | dropout 0.2 | row and feature subsampling 0.8 and an L2 penalty of 1 on leaf values (fixed, not tuned) |
 | Tuning on validation | settled in development (see below) | a grid of 4 configurations, once |
 | Prediction | argmax of class probabilities | argmax of class probabilities |
 
@@ -95,10 +95,50 @@ thresholds, probability calibration. The code rejects the corresponding
 LightGBM settings.
 
 Fixed LightGBM settings: `objective: multiclass`, `max_bin` 255,
-`feature_fraction` 0.8, `bagging_fraction` 0.8, `bagging_freq` 1,
+`lambda_l2` 1.0, `feature_fraction` 0.8, `bagging_fraction` 0.8, `bagging_freq` 1,
 `deterministic: true`, `force_row_wise: true`, all CPU cores; the subsampling
 seeds are derived from the campaign seed (this is what makes B4's seeds
 differ). Everything else is at LightGBM's defaults.
+
+Why `lambda_l2` is set: with LightGBM's default of 0, leaves whose rows are
+already confidently classified have near-zero hessians and output very large
+values (thousands, against well under 1 normally); multiclass training on
+these data then diverges within a few tens of rounds (validation log-loss
+rose from about 0.3 to between 1.7 and 19 within 60 rounds) and early
+stopping keeps a 10-round model.
+An L2 penalty of 1 bounds the leaf values and removes the divergence. It is a
+numerical stabilizer, fixed before any B4 result and not tuned. The patience
+of 200 rounds (10% of the 2,000-round cap) leaves room for the noise of
+validation macro-F1 between checks (M's Stage C: patience 5 of at most 30
+epochs).
+
+Training-sample sensitivity (reported, not used for selection): after tuning,
+the chosen configuration is retrained with the tuning seed on class-capped
+samples of 2.5%, 5% and 20% of the training rows (same sampling and
+reweighting as the main 10% sample), and the best validation macro-F1 and the
+test macro-F1 of each are reported next to the main 10% run
+(`runs/B4/sample_sensitivity/Sample_Sensitivity.csv`). If B4 still gains
+clearly from 10% to 20%, the sample limits B4 and this is said with the
+results.
+
+### How each condition targets macro-F1
+
+No condition optimizes macro-F1 directly (it is not differentiable). Every
+condition, M and B4 included, minimizes a class-weighted cross-entropy with
+the same square-root inverse-frequency weights, and macro-F1 enters only
+through those weights and through selection on validation macro-F1 (M's
+Stage-C epoch, B4's boosting round and B4's tuning grid). No condition uses
+per-class thresholds or post-hoc calibration in the main results.
+
+Supplementary analysis, applied identically to every condition and seed
+(`scripts/bias_tuning.py`): one additive offset per class on the log class
+probabilities (Benign fixed at 0) is fitted on validation by coordinate ascent
+over a fixed grid (-8 to 8 in steps of 0.25, up to 3 passes) to maximize
+macro-F1, and applied unchanged to test. The fit uses every validation row of
+classes with at most 200,000 validation rows and 200,000 rows of larger
+classes, each weighted by n_c / k_c so the weighted confusion matrix estimates
+the full validation one. It is reported separately from the main results
+(`summary/Bias_Tuning_*.csv`); test data is never used for fitting.
 
 Training sample. On all 46.9M pooled training rows, a 22-class LightGBM run
 did not fit in the memory of a Colab CPU high-RAM runtime (it keeps a score,

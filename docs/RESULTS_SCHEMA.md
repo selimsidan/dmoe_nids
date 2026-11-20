@@ -128,6 +128,20 @@ val_macro_f1, rounds_trained, stopped_early, wall_seconds`), `chosen.json`
 with `progress.json`, `model_progress.txt` and `Validation_Checks.csv`
 (`round, val_macro_f1, val_multi_logloss`).
 
+### B4 training-sample sensitivity: `runs/B4/sample_sensitivity/`
+`Sample_Sensitivity.csv` (`target_fraction, main, train_rows, seed,
+config_id, best_round, val_macro_f1, test_macro_f1, rounds_trained,
+stopped_early, wall_seconds`; the `main` row is the chosen tuning run) and
+one folder per extra fraction (`fraction-<f>/`, as a tuning configuration
+folder). Written by `scripts/lightgbm_sample_sensitivity.py`.
+
+### `eval/Bias_Tuning.json` (supplementary)
+Per-class offsets fitted on validation for macro-F1 and applied to test
+(`scripts/bias_tuning.py`; see METHOD.md): `settings`, `class_names`,
+`offsets`, `fit_rows`, `fit_weighted_val_macro_f1` (raw, tuned), `val` and
+`test` (`raw` and `tuned`: macro_f1, macro_precision, macro_recall, accuracy,
+weighted_f1) and `test_per_dataset` (the same per origin dataset).
+
 ### `Training_History.csv`
 (B4: one Stage C row per validation check, `encoder_role` lightgbm, `epoch` =
 boosting round.)
@@ -167,6 +181,13 @@ and recall, accuracy, support) and, for dataset-expert conditions,
 * `Recommended_Seeds.csv`: `condition, recommended_seed, val_macro_f1, rule,
   seeds_considered, advertised`.
 * `Summary_Info.json`: seeds per condition, warnings, split signatures.
+* Supplementary, from `scripts/bias_tuning.py`: `Bias_Tuning_Per_Seed.csv`
+  (`condition, seed, origin, metric, raw, tuned, gain`),
+  `Bias_Tuning_Summary.csv` (`condition, origin, metric, n, raw_mean, raw_sd,
+  tuned_mean, tuned_sd, gain_mean`) and `Bias_Tuning_Paired_vs_M.csv`
+  (`reference, condition, origin, metric, scores` raw or tuned,
+  `difference_mean, difference_sd, n_common_seeds, seeds_favoring_reference`;
+  here difference = condition minus M).
 * `confusion/<condition>/`: test confusion matrix summed over seeds.
 * `training/<condition>/`: learning curves across seeds (mean and SD band).
 

@@ -316,3 +316,69 @@ def test_b4_early_stopping_keeps_the_best_round(tmp_path):
     text = lb.final_model_text(str(tmp_path / "run"), state["best_round"])
     booster = lb._lgb().Booster(model_str=text)
     assert booster.current_iteration() == state["best_round"]
+
+
+# ---------------------------------------------------------------- post-hoc analyses
+
+
+def _cli(name, trained, *args):
+    import subprocess
+    import sys
+
+    from synthetic import FAST_OVERRIDES
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    roots = ["--data-root", trained["data"], "--output-root", trained["output"], "--scratch-root", trained["scratch"]]
+    sets = [arg for override in FAST_OVERRIDES for arg in ("--set", override)]
+    return subprocess.run([sys.executable, os.path.join(repo, "scripts", name), *roots, *sets, *args],
+                          capture_output=True, text=True, cwd=repo)
+
+
+def test_b4_sample_sensitivity_reuses_main_run_and_trains_other_fractions(trained):
+    result = _cli("lightgbm_sample_sensitivity.py", trained, "--set", "lightgbm.sample_sensitivity.fractions=[0.25]")
+    assert result.returncode == 0, result.stderr
+    folder = os.path.join(trained["output"], "runs", "B4")
+    table = pd.read_csv(os.path.join(folder, "sample_sensitivity", "Sample_Sensitivity.csv"))
+    assert list(table["target_fraction"]) == [0.25, 0.5] and list(table["main"]) == [False, True]
+    assert table["train_rows"].iloc[0] < table["train_rows"].iloc[1]
+    assert table[["val_macro_f1", "test_macro_f1"]].notna().all().all()
+    chosen = json.load(open(os.path.join(folder, "tuning", "chosen.json")))
+    assert table["val_macro_f1"].iloc[1] == pytest.approx(chosen["val_macro_f1"])
+    again = _cli("lightgbm_sample_sensitivity.py", trained, "--set", "lightgbm.sample_sensitivity.fractions=[0.25]")
+    assert again.returncode == 0 and "sample 0.25" not in again.stdout  # resumable: nothing retrained
+
+
+def test_bias_offsets_fit_on_weighted_subset_and_improve_macro_f1():
+    from dmoe.evaluation.bias_tuning import fit_offsets, fit_subset, macro_f1, weighted_confusion
+
+    rng = np.random.default_rng(0)
+    truth = rng.choice(3, size=30_000, p=[0.9, 0.08, 0.02])
+    scores = rng.normal(size=(len(truth), 3)).astype(np.float32)
+    scores[np.arange(len(truth)), truth] += 1.5
+    scores[:, 0] += 1.0  # the model over-predicts the majority class
+    rows, weights = fit_subset(truth, cap=2_000, seed=0)
+    assert np.all(np.diff(rows) > 0)
+    np.testing.assert_allclose(np.bincount(truth[rows], weights=weights), np.bincount(truth))
+    offsets, start, best = fit_offsets(scores[rows], truth[rows], weights, np.arange(-3, 3.01, 0.25), passes=3)
+    assert offsets[0] == 0 and best > start
+    full_raw = macro_f1(weighted_confusion(truth, scores.argmax(1), np.ones(len(truth)), 3))
+    full_tuned = macro_f1(weighted_confusion(truth, (scores + offsets).argmax(1), np.ones(len(truth)), 3))
+    assert full_tuned > full_raw and start == pytest.approx(full_raw, abs=0.02)
+    zero, _, _ = fit_offsets(scores[rows], truth[rows], weights, [0.0], passes=1)
+    assert not zero.any()
+
+
+def test_bias_tuning_cli_writes_per_run_results_and_summary(trained):
+    result = _cli("bias_tuning.py", trained, "--only", "M", "B4", "A2", "--seeds", "0", "--device", "cpu")
+    assert result.returncode == 0, result.stderr
+    for condition in ("M", "B4", "A2"):
+        run = json.load(open(os.path.join(_run(trained["output"], condition), "eval", "Bias_Tuning.json")))
+        assert run["offsets"][0] == 0 and len(run["offsets"]) == len(run["class_names"])
+        assert run["val"]["tuned"]["macro_f1"] >= run["val"]["raw"]["macro_f1"] - 1e-9
+        raw = pd.read_csv(os.path.join(_run(trained["output"], condition), "eval", "test", "Overall_Metrics.csv"))
+        overall = raw[raw["origin"] == "ALL"] if "origin" in raw else raw
+        assert run["test"]["raw"]["macro_f1"] == pytest.approx(float(overall["macro_f1"].iloc[0]), abs=1e-6)
+    summary = os.path.join(trained["output"], "summary")
+    paired = pd.read_csv(os.path.join(summary, "Bias_Tuning_Paired_vs_M.csv"))
+    assert set(paired["condition"]) == {"B4", "A2"} and set(paired["scores"]) == {"raw", "tuned"}
+    assert set(pd.read_csv(os.path.join(summary, "Bias_Tuning_Summary.csv"))["origin"]) >= {"ALL"}
