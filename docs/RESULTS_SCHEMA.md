@@ -23,7 +23,7 @@ log.txt                streamed training output
 Training_History.csv   per-epoch training record of all stages (shared stages included)
 figures/               Stage_{A,B,C}_Learning_Curves.png
 checkpoints/           run_contract.json, stage_A/, stage_B/, stage_C/ (not committed)
-                       B4: lightgbm/ (checkpoint and progress) and stage_C/lightgbm_model.txt
+                       B4: xgboost/ (checkpoint and progress) and stage_C/xgboost_model.ubj
 bundle/                the exported model (not committed; see MODEL_CARD.md)
 eval/Resource_Accounting.csv
 eval/selection/        validation reports written during Stage C selection
@@ -109,31 +109,23 @@ inference cost (`test_inference_wall_seconds`, `test_inference_rows_per_second`,
 `test_peak_memory_bytes`).
 
 For B4 the parameter and MAC columns read `n/a`; instead it reports
-`lightgbm_trees`, `lightgbm_total_leaves`, `lightgbm_best_round`,
-`lightgbm_rounds_trained`, `lightgbm_model_bytes`, `lightgbm_chosen` (the tuned
-configuration), `lightgbm_train_rows` (rows of the training sample) and `lightgbm_threads`; its `C_*`
+`xgboost_trees` (one per class and round), `xgboost_total_leaves`,
+`xgboost_best_round`, `xgboost_rounds_trained`, `xgboost_model_bytes`,
+`xgboost_chosen` (the tuned configuration), `xgboost_train_rows`,
+`xgboost_device` and `xgboost_resumed_after_rounds`; its `C_*`
 training columns describe the boosting run (`C_epochs_completed` = rounds
 trained, `C_selected_epoch` = best round). The manifest has
 `total_parameters: null` and a `model_size` block with the tree counts.
 
 ### B4 tuning: `runs/B4/tuning/`
-`training_sample.json` (the class-capped sample: `target_fraction`, `seed`,
-`cap_per_class`, `total_rows`, `sample_rows` and per class `rows`, `kept`,
-`weight_multiplier`), `pilot.json` (the timing pilot: seconds per round, rows,
-projected grid hours, peak memory, the limit), `Tuning_Log.csv` (`config_id,
-learning_rate, num_leaves, seed, train_rows, best_round,
+`pilot.json` (the timing pilot: device, seconds per round, one validation
+check, rows, GPU memory in use, worst-case projected hours), `Tuning_Log.csv`
+(`config_id, learning_rate, max_leaves, seed, train_rows, device, best_round,
 val_macro_f1, rounds_trained, stopped_early, wall_seconds`), `chosen.json`
-(chosen configuration, its validation macro-F1 and best round,
+(chosen configuration, its validation macro-F1 and best round, `train_rows`,
 `seed_max_rounds`, `cap_extended`, the rule) and one folder per configuration
-with `progress.json`, `model_progress.txt` and `Validation_Checks.csv`
+with `progress.json`, `model_progress.ubj` and `Validation_Checks.csv`
 (`round, val_macro_f1, val_multi_logloss`).
-
-### B4 training-sample sensitivity: `runs/B4/sample_sensitivity/`
-`Sample_Sensitivity.csv` (`target_fraction, main, train_rows, seed,
-config_id, best_round, val_macro_f1, test_macro_f1, rounds_trained,
-stopped_early, wall_seconds`; the `main` row is the chosen tuning run) and
-one folder per extra fraction (`fraction-<f>/`, as a tuning configuration
-folder). Written by `scripts/lightgbm_sample_sensitivity.py`.
 
 ### `eval/Bias_Tuning.json` (supplementary)
 Per-class offsets fitted on validation for macro-F1 and applied to test
@@ -143,7 +135,7 @@ Per-class offsets fitted on validation for macro-F1 and applied to test
 weighted_f1) and `test_per_dataset` (the same per origin dataset).
 
 ### `Training_History.csv`
-(B4: one Stage C row per validation check, `encoder_role` lightgbm, `epoch` =
+(B4: one Stage C row per validation check, `encoder_role` xgboost, `epoch` =
 boosting round.)
 
 `seed, stage, encoder_role, dataset, epoch, objective, learning_rate, rows,

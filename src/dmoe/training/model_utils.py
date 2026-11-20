@@ -10,7 +10,7 @@ moe_dataset_uniform                                 A2         uniform average o
 moe_dataset_private_encoders_class_conditional      A3         class-conditional MoE, private encoders
 ==================================================  =========  =====================
 
-B4 (``pooled_lightgbm``) is not a torch model; see ``lightgbm_baseline``.
+B4 (``pooled_xgboost``) is not a torch model; see ``xgboost_baseline``.
 """
 from __future__ import annotations
 

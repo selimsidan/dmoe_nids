@@ -4,7 +4,7 @@ Forward MACs count Linear-layer weight multiplications per sample.  The report
 uses the explicit convention ``FLOPs = 2 * MACs`` (one multiply plus one add)
 and excludes nonlinearities, dropout, indexing, and softmax from both values.
 
-B4 (LightGBM) has no parameters or MACs in this sense; its row reports trees,
+B4 (XGBoost) has no parameters or MACs in this sense; its row reports trees,
 leaves, model size and the selected boosting round instead, and the parameter
 and MAC columns read ``n/a``.
 """
@@ -92,9 +92,9 @@ def _training_columns(summary: dict | None) -> dict:
     return columns
 
 
-def lightgbm_profile(model, config: dict, *, trial_id, split_signature, training_summary) -> dict:
+def xgboost_profile(model, config: dict, *, trial_id, split_signature, training_summary) -> dict:
     """B4: tree counts and size instead of parameters and MACs."""
-    info = getattr(model, "lightgbm_info", {}) or {}
+    info = getattr(model, "xgboost_info", {}) or {}
     row = {
         "Trial_ID": trial_id,
         "condition": config.get("condition", {}).get("condition"),
@@ -110,14 +110,15 @@ def lightgbm_profile(model, config: dict, *, trial_id, split_signature, training
         "classifier_expert_parameters": NOT_APPLICABLE,
         "stored_linear_macs": NOT_APPLICABLE,
         "flop_convention": NOT_APPLICABLE,
-        "lightgbm_trees": model.num_trees(),
-        "lightgbm_total_leaves": model.total_leaves(),
-        "lightgbm_best_round": model.best_round(),
-        "lightgbm_rounds_trained": info.get("rounds_trained"),
-        "lightgbm_model_bytes": len(model.model_text.encode()),
-        "lightgbm_chosen": json.dumps((info.get("chosen") or {}).get("chosen")),
-        "lightgbm_train_rows": (info.get("chosen") or {}).get("train_rows"),
-        "lightgbm_threads": model.threads,
+        "xgboost_trees": model.num_trees(),
+        "xgboost_total_leaves": model.total_leaves(),
+        "xgboost_best_round": model.best_round(),
+        "xgboost_rounds_trained": info.get("rounds_trained"),
+        "xgboost_model_bytes": len(model.model_bytes),
+        "xgboost_chosen": json.dumps((info.get("chosen") or {}).get("chosen")),
+        "xgboost_train_rows": (info.get("chosen") or {}).get("train_rows"),
+        "xgboost_device": model.device,
+        "xgboost_resumed_after_rounds": json.dumps(info.get("resumed_after_rounds", [])),
         **_training_columns(training_summary),
     }
     return row
@@ -133,8 +134,8 @@ def resource_profile(
     training_summary: dict | None = None,
 ) -> dict:
     """Return one report-ready row with architecture-specific active costs."""
-    if config.get("architecture") == "pooled_lightgbm":
-        return lightgbm_profile(model, config, trial_id=trial_id, split_signature=split_signature,
+    if config.get("architecture") == "pooled_xgboost":
+        return xgboost_profile(model, config, trial_id=trial_id, split_signature=split_signature,
                                 training_summary=training_summary)
     encoder_params = gate_params = classifier_params = 0
     encoder_macs = gate_macs = classifier_macs = 0

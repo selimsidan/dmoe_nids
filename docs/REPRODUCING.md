@@ -10,7 +10,7 @@ seeds, the split policy and which stages each condition reuses.
 | M | Stage A, B, C | | GPU |
 | B2 capacity-matched pooled MLP | Stage B, C (head only) | Stage A | GPU |
 | B3 hard-routing two-stage baseline | Stage C (router only) | Stage A, Stage B | GPU |
-| B4 pooled LightGBM | its tuning (once), then one booster per seed | nothing | CPU, high RAM |
+| B4 pooled XGBoost | its tuning (once), then one booster per seed | nothing | GPU with 40 GB memory (e.g. A100) |
 | A1 no contrastive loss | Stage A, B, C | nothing | GPU |
 | A2 no gating (uniform average) | nothing (Stage C is assembled, not trained) | Stage A, Stage B | GPU or CPU |
 | A3 private encoders | Stage B, C | Stage A (copied into every encoder) | GPU |
@@ -28,9 +28,8 @@ python scripts/run_campaign.py                              # plan: what is done
 python scripts/run_campaign.py --execute                    # train everything pending
 python scripts/run_campaign.py --only M --seeds 3 4 --execute
 python scripts/run_campaign.py --only B2 B3 --execute --runs-per-session 1
-python scripts/run_campaign.py --only B4 --execute         # CPU runtime with high RAM
-python scripts/lightgbm_pilot.py                           # B4 timing pilot; writes no results
-python scripts/lightgbm_sample_sensitivity.py              # after B4 tuning: 2.5%, 5%, 20% samples
+python scripts/run_campaign.py --only B4 --execute         # A100 (40 GB) GPU runtime
+python scripts/xgboost_pilot.py                            # B4 timing pilot; writes no results
 ```
 
 Without `--execute` nothing is trained. A unit whose parent is missing is
@@ -81,16 +80,16 @@ re-evaluation refuse them.
 
 Every run seeds Python, NumPy and PyTorch, uses deterministic cuDNN and
 `torch.use_deterministic_algorithms(True)`, and draws batch orders from NumPy
-generators seeded per stage and epoch. B4 uses LightGBM's `deterministic`
-mode with seeded row and feature subsampling; an uninterrupted B4 run is
-exactly reproducible, and a run resumed after a disconnect records its resume
-round (`resumed_after_rounds`), since subsampling restarts there. Its result
-can depend on the LightGBM version and the number of CPU threads, both
-recorded in the manifest.
+generators seeded per stage and epoch. B4 uses XGBoost with seeded row
+and column subsampling; an uninterrupted B4 run on the same GPU model is
+expected to be reproducible, and a run resumed after a disconnect records its
+resume round (`resumed_after_rounds`), since subsampling restarts there. Its
+result can depend on the XGBoost version and the GPU, both recorded in the
+manifest.
 
-On macOS, torch and LightGBM ship separate OpenMP runtimes that crash when
+On macOS, torch and XGBoost ship separate OpenMP runtimes that crash when
 both run in one process; B4 units are therefore started through
-`dmoe.training.run_lightgbm_unit`, which loads LightGBM first (see
+`dmoe.training.run_xgboost_unit`, which loads XGBoost first (see
 `dmoe.openmp`). Linux (Colab) is not affected.
 
 **Guarantee:** the same code, data, seeds, library versions and GPU model give
@@ -113,11 +112,10 @@ every run manifest and bundle. Evaluation, aggregation (bootstrap seed
 the cross-seed summary and paper tables (`02_evaluate` with `MODE = "tables"`
 does the latter on its own).
 
-* Choose a GPU runtime with high RAM for `01_reproduce_all` (B4 trains on the
-  CPU cores; its training sample and the full validation set need more than
-  a standard runtime's RAM). Alternatively run
-  `CONDITIONS = ['B4']` in a separate CPU high-RAM session and the other six
-  conditions in a GPU session at the same time; they write to different folders.
+* B4 needs a GPU with about 40 GB of memory (an A100 runtime); the other six
+  conditions run on a T4. Either run `01_reproduce_all` on an A100 for
+  everything, or run `CONDITIONS = ['B4']` in a separate A100 session and the
+  other six in a T4 session at the same time; they write to different folders.
 * Edit only the SETTINGS cell. `RUNS_PER_SESSION = 1` trains one unit per
   execution; `None` trains until done or disconnected. Rerunning the notebook
   resumes where it stopped (completed units are skipped, an interrupted unit

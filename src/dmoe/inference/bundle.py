@@ -18,7 +18,7 @@ M (and A1) additionally ship ``stage_a_encoder.safetensors`` and
 ``stage_b_expert_bank.safetensors`` so the conditions that reuse them can be
 retrained from its checkpoints.
 
-B4 (LightGBM) ships ``lightgbm_model.txt`` (LightGBM's text format) instead of
+B4 (XGBoost) ships ``xgboost_model.ubj`` (XGBoost's UBJSON model format) instead of
 ``model.safetensors``; everything else is the same.
 
 ``load_bundle`` verifies the file hashes and asserts that ``model.forward``
@@ -51,7 +51,7 @@ LABELS_FILE = "labels.json"
 METADATA_FILE = "metadata.json"
 STAGE_A_BUNDLE_FILE = "stage_a_encoder.safetensors"
 STAGE_B_BUNDLE_FILE = "stage_b_expert_bank.safetensors"
-LIGHTGBM_BUNDLE_FILE = "lightgbm_model.txt"
+XGBOOST_BUNDLE_FILE = "xgboost_model.ubj"
 FORMAT_VERSION = 1
 
 
@@ -145,14 +145,14 @@ def export_bundle(
         "benign_label": "Benign",
         "raw_label_map": {name: config["data"]["label_mapping"][name] for name in data.active_datasets},
     }
-    if config["architecture"] == "pooled_lightgbm":
-        model_config["lightgbm"] = {
-            "chosen": (getattr(model, "lightgbm_info", {}).get("chosen") or {}).get("chosen"),
+    if config["architecture"] == "pooled_xgboost":
+        model_config["xgboost"] = {
+            "chosen": (getattr(model, "xgboost_info", {}).get("chosen") or {}).get("chosen"),
             "best_round": model.best_round(),
             "trees": model.num_trees(),
         }
-        with open(os.path.join(bundle_dir, LIGHTGBM_BUNDLE_FILE), "w") as handle:
-            handle.write(model.model_text)
+        with open(os.path.join(bundle_dir, XGBOOST_BUNDLE_FILE), "wb") as handle:
+            handle.write(model.model_bytes)
     else:
         save_file(_state_for_safetensors(model.state_dict()), os.path.join(bundle_dir, MODEL_FILE))
     _write_json(model_config, os.path.join(bundle_dir, CONFIG_FILE))
@@ -270,11 +270,12 @@ def load_bundle(path: str, device: str | torch.device = "cpu", *, verify: bool =
     if labels["class_names"] != config["class_names"]:
         raise ValueError("bundle labels.json and config.json disagree on the class order")
     device = torch.device(device)
-    if config["architecture"] == "pooled_lightgbm":
-        from ..training.lightgbm_baseline import LightGBMModel
+    if config["architecture"] == "pooled_xgboost":
+        from ..training.xgboost_baseline import XGBoostModel
 
-        with open(os.path.join(path, LIGHTGBM_BUNDLE_FILE)) as handle:
-            model = LightGBMModel(handle.read(), config["class_names"], preprocessing["feature_columns"])
+        with open(os.path.join(path, XGBOOST_BUNDLE_FILE), "rb") as handle:
+            model = XGBoostModel(handle.read(), config["class_names"], preprocessing["feature_columns"],
+                                 device="cuda" if torch.device(device).type == "cuda" else "cpu")
         assert_dataset_blind_signature(model)
         device = torch.device("cpu")
     else:

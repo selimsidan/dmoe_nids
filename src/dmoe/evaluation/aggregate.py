@@ -50,11 +50,11 @@ def _size_notes(runs) -> dict[str, str]:
     sizes: dict[str, list[dict]] = {}
     for run in runs:
         size = run.manifest.get("model_size") or {}
-        if size.get("lightgbm_trees") is not None:
+        if size.get("xgboost_trees") is not None:
             sizes.setdefault(run.condition, []).append(size)
     return {
-        condition: (f"n/a ({np.mean([v['lightgbm_trees'] for v in values]):,.0f} trees, "
-                    f"{np.mean([v['lightgbm_total_leaves'] for v in values]):,.0f} leaves; mean of {len(values)} seeds)")
+        condition: (f"n/a ({np.mean([v['xgboost_trees'] for v in values]):,.0f} trees, "
+                    f"{np.mean([v['xgboost_total_leaves'] for v in values]):,.0f} leaves; mean of {len(values)} seeds)")
         for condition, values in sizes.items()
     }
 

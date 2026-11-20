@@ -143,7 +143,7 @@ def model_device(model) -> torch.device:
 
 def model_outputs(model, tensor: torch.Tensor) -> dict[str, torch.Tensor]:
     """Forward one batch and normalize the output to probabilities, gate and expert logits."""
-    if hasattr(model, "predict_proba"):  # B4 (LightGBM): no gate, no experts
+    if hasattr(model, "predict_proba"):  # B4 (XGBoost): no gate, no experts
         probabilities = model.predict_proba(tensor.detach().cpu().numpy())
         return {"probabilities": torch.from_numpy(np.ascontiguousarray(probabilities))}
     output = model(tensor)

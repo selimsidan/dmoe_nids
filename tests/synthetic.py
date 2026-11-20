@@ -36,14 +36,14 @@ FAST_OVERRIDES = [
     "evaluation.roc_auc_bins=64",
     "data.chunk_rows=300",
     "data.expected_classes=null",
-    # B4 (LightGBM): a short grid and few rounds; ignored by the other conditions.
-    "lightgbm.grid.num_leaves=[7,15]",
-    "lightgbm.max_rounds=40",
-    "lightgbm.extended_max_rounds=60",
-    "lightgbm.checkpoint_rounds=20",
-    "lightgbm.patience_rounds=20",
-    "lightgbm.tuning.pilot_rounds=0",
-    "lightgbm.training_sample.target_fraction=0.5",
+    # B4 (XGBoost, CPU in the tests): a short grid and few rounds; ignored by the other conditions.
+    "xgboost.device=cpu",
+    "xgboost.grid.max_leaves=[7,15]",
+    "xgboost.max_rounds=40",
+    "xgboost.extended_max_rounds=60",
+    "xgboost.checkpoint_rounds=20",
+    "xgboost.patience_rounds=20",
+    "xgboost.tuning.pilot_rounds=0",
 ]
 
 

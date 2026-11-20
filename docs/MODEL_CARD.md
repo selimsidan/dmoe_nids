@@ -23,7 +23,7 @@ networks unlike the four source datasets.
 Each trained run exports a bundle (`model.safetensors`, `config.json`,
 `preprocessing.json`, `labels.json`, `metadata.json`); `load_bundle` verifies
 the SHA-256 of every file and loads weights with safetensors only. The B4
-baseline (LightGBM) ships `lightgbm_model.txt` in LightGBM's text format
+baseline (XGBoost) ships `xgboost_model.ubj` in XGBoost's UBJSON model format
 instead of `model.safetensors`.
 `metadata.json` records condition, seed, split, selected epochs, validation
 and test macro-F1, parameters, code commit and library versions.

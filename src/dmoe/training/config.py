@@ -30,7 +30,7 @@ MOE_ARCHITECTURES = {
     "moe_dataset_private_encoders_class_conditional",
 }
 DENSE_ARCHITECTURES = {"matched_dense"}
-TREE_ARCHITECTURES = {"pooled_lightgbm"}
+TREE_ARCHITECTURES = {"pooled_xgboost"}
 ARCHITECTURES = MOE_ARCHITECTURES | DENSE_ARCHITECTURES | TREE_ARCHITECTURES
 
 # Presets applied unless the condition sets the key explicitly.

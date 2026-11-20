@@ -34,7 +34,7 @@ def test_b2_head_widths():
 
 def test_b4_has_no_parameter_count():
     config = load_config(load_campaign().entry("B4").config_path)
-    assert config["architecture"] == "pooled_lightgbm"
+    assert config["architecture"] == "pooled_xgboost"
     assert config["condition"]["expected_total_parameters"] is None
 
 

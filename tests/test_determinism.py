@@ -56,8 +56,8 @@ def test_b4_same_seed_identical_different_seed_differs(trained, tmp_path, monkey
     train_unit("B4", 1, roots)
 
     def model_text(root, seed):
-        path = os.path.join(root, "runs", "B4", f"seed{seed}", "checkpoints", "stage_C", "lightgbm_model.txt")
-        return open(path).read().split("parameters:")[0]
+        path = os.path.join(root, "runs", "B4", f"seed{seed}", "checkpoints", "stage_C", "xgboost_model.ubj")
+        return open(path, "rb").read()
 
     assert model_text(trained["output"], 0) == model_text(roots["output"], 0)
     assert model_text(roots["output"], 0) != model_text(roots["output"], 1)

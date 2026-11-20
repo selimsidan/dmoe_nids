@@ -30,7 +30,7 @@ from ..training.checkpoint import (
     resolve_stage_a_path, resolve_stage_b_path, stage_file,
 )
 from ..training.config import MOE_ARCHITECTURES, config_hash
-from ..training.lightgbm_baseline import MODEL_FILE as LIGHTGBM_MODEL_FILE
+from ..training.xgboost_baseline import MODEL_FILE as XGBOOST_MODEL_FILE
 from ..training.reproducibility import environment_info
 from ..training.training_history import TRAINING_HISTORY_FILE, read_training_history, plot_seed_training_history
 from .predictions import PREDICTION_FILES, predict_split
@@ -56,7 +56,7 @@ def _checkpoint_records(config: dict, output_root: str) -> dict:
         "stage_c": stage_file(checkpoint_dir, "C", STAGE_C_FILE),
         "baseline_stage_b": stage_file(checkpoint_dir, "B", BASELINE_STAGE_B_FILE),
         "baseline": stage_file(checkpoint_dir, "C", BASELINE_MODEL_FILE),
-        "lightgbm": stage_file(checkpoint_dir, "C", LIGHTGBM_MODEL_FILE),
+        "xgboost": stage_file(checkpoint_dir, "C", XGBOOST_MODEL_FILE),
     }
     records = {}
     for key, path in candidates.items():
@@ -72,7 +72,7 @@ def _checkpoint_records(config: dict, output_root: str) -> dict:
 
 def _selected_epochs(config: dict) -> dict:
     summary_path = os.path.join(config["training"]["checkpoint_dir"], "stage_c_training_summary.json")
-    if config["architecture"] == "pooled_lightgbm":
+    if config["architecture"] == "pooled_xgboost":
         selected = {}
     else:
         selected = {"stage_a": config["training"].get("epochs_a"), "stage_b": config["training"].get("epochs_b")}
@@ -81,9 +81,9 @@ def _selected_epochs(config: dict) -> dict:
             value = json.load(handle)
         selected["stage_c"] = value.get("best_epoch")
         selected["stage_c_best_validation_macro_f1"] = value.get("best_validation_macro_f1")
-        if config["architecture"] == "pooled_lightgbm":
-            selected = {"lightgbm_best_round": value.get("best_epoch"),
-                        "lightgbm_best_validation_macro_f1": value.get("best_validation_macro_f1")}
+        if config["architecture"] == "pooled_xgboost":
+            selected = {"xgboost_best_round": value.get("best_epoch"),
+                        "xgboost_best_validation_macro_f1": value.get("best_validation_macro_f1")}
     return selected
 
 
@@ -164,7 +164,7 @@ def finalize_unit(model, context, config: dict, contract: dict, *, training_seco
     os.replace(history_path + ".tmp", history_path)
     figure_paths = plot_seed_training_history(
         history, os.path.join(run_dir, "figures"),
-        selected_epoch=_selected_epochs(config).get("stage_c", _selected_epochs(config).get("lightgbm_best_round")),
+        selected_epoch=_selected_epochs(config).get("stage_c", _selected_epochs(config).get("xgboost_best_round")),
     ) if not history.empty else []
 
     # 4. Bundle export.
@@ -218,9 +218,9 @@ def finalize_unit(model, context, config: dict, contract: dict, *, training_seco
         "total_parameters": _int_or_none(row["total_parameters"]),
         "trainable_parameters_stage_c": _int_or_none(row["trainable_parameters"]),
         "model_size": (
-            {key: row[key] for key in ("lightgbm_trees", "lightgbm_total_leaves", "lightgbm_best_round",
-                                       "lightgbm_model_bytes")}
-            if config["architecture"] == "pooled_lightgbm" else None
+            {key: row[key] for key in ("xgboost_trees", "xgboost_total_leaves", "xgboost_best_round",
+                                       "xgboost_model_bytes")}
+            if config["architecture"] == "pooled_xgboost" else None
         ),
         "stages_trained": list(config["training"]["stages"]),
         "depends_on": dict(run["depends_on"]),

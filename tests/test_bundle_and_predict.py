@@ -89,14 +89,14 @@ def test_m_bundle_ships_stage_weights(trained):
     assert "stage_a_encoder.safetensors" not in os.listdir(_bundle_dir(trained["output"], "B3"))
 
 
-def test_b4_bundle_is_a_lightgbm_text_model_on_the_47_features(trained):
-    from dmoe.training.lightgbm_baseline import assert_dataset_blind_booster
+def test_b4_bundle_is_an_xgboost_model_on_the_47_features(trained):
+    from dmoe.training.xgboost_baseline import assert_dataset_blind_booster
 
     path = _bundle_dir(trained["output"], "B4")
     files = set(os.listdir(path))
-    assert "lightgbm_model.txt" in files and "model.safetensors" not in files
+    assert "xgboost_model.ubj" in files and "model.safetensors" not in files
     bundle = load_bundle(path)
-    assert bundle.model.booster.feature_name() == bundle.feature_columns and len(bundle.feature_columns) == 47
+    assert bundle.model.booster.feature_names == bundle.feature_columns and len(bundle.feature_columns) == 47
     with pytest.raises(AssertionError, match="dataset-blind"):
         assert_dataset_blind_booster(bundle.model.booster, [*bundle.feature_columns, "dataset_id"])
     frame = pd.read_csv(paths.dataset_csv_path("NF-ToN-IoT-v3", trained["data"]), nrows=20)

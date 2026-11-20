@@ -25,7 +25,7 @@ conditions:
     config: baselines/B3_hard_routing_two_stage.yaml
     depends_on: {stage_a: M, stage_b: M}
   - id: B4
-    config: baselines/B4_pooled_lightgbm.yaml   # CPU; its tuning runs once before its first seed
+    config: baselines/B4_pooled_xgboost.yaml    # GPU (40 GB class); its tuning runs once before its first seed
   - id: A1
     config: ablations/A1_no_contrastive_loss.yaml   # trains its own Stage A, B and C
   - id: A2

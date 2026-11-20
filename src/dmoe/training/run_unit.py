@@ -74,10 +74,10 @@ def train_unit(config: dict, context) -> torch.nn.Module:
     stages = list(config["training"]["stages"])
     device = torch.device(config["training"]["device"])
 
-    if config["architecture"] == "pooled_lightgbm":
-        from .lightgbm_baseline import train_lightgbm_unit
+    if config["architecture"] == "pooled_xgboost":
+        from .xgboost_baseline import train_xgboost_unit
 
-        return train_lightgbm_unit(config, context)
+        return train_xgboost_unit(config, context)
 
     if config["architecture"] == "matched_dense":
         if "A" in stages and not stage_complete(checkpoint_dir, "A"):
@@ -149,15 +149,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.force_restart and not args.tune:
         _restart(checkpoint_dir)
 
-    if config["architecture"] == "pooled_lightgbm":
+    if config["architecture"] == "pooled_xgboost":
         # B4 uses torch only to move arrays (see dmoe.openmp; the campaign starts B4 units
-        # through dmoe.training.run_lightgbm_unit, which also loads LightGBM first).
+        # through dmoe.training.run_xgboost_unit, which also loads XGBoost first).
         torch.set_num_threads(1)
     if args.tune:
-        from .lightgbm_baseline import run_tuning
+        from .xgboost_baseline import run_tuning
 
-        if config["architecture"] != "pooled_lightgbm":
-            raise ValueError(f"--tune applies to pooled_lightgbm conditions, not {config['architecture']}")
+        if config["architecture"] != "pooled_xgboost":
+            raise ValueError(f"--tune applies to pooled_xgboost conditions, not {config['architecture']}")
         run_tuning(config, prepare_out_of_core_data(config), args.condition, roots["output"].path)
         print(f"[run] {args.condition} tuning complete in {(time.monotonic() - started) / 60:.1f} min", flush=True)
         return

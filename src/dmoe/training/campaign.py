@@ -10,7 +10,7 @@ A unit is complete when ``runs/<condition>/seed<k>/manifest.json`` says so and
 its recorded config hash matches the current config. Completed units are
 skipped; interrupted units resume from their last epoch checkpoint.
 
-B4 (``pooled_lightgbm``) has one extra unit, its tuning, which runs once
+B4 (``pooled_xgboost``) has one extra unit, its tuning, which runs once
 before B4's first seed and writes ``runs/B4/tuning/chosen.json``. It is
 complete when that file matches the current B4 settings.
 """
@@ -112,12 +112,12 @@ def checkpoint_dir(condition: str, seed: int, output_root: str | None = None) ->
     return os.path.join(run_dir(condition, seed, output_root), "checkpoints")
 
 
-LIGHTGBM_STAGES = ["lightgbm"]
+TREE_STAGES = ["xgboost"]
 
 
 def stages_for(entry: ConditionEntry, architecture: str | None = None) -> list[str]:
-    if architecture == "pooled_lightgbm":
-        return list(LIGHTGBM_STAGES)
+    if architecture == "pooled_xgboost":
+        return list(TREE_STAGES)
     stages = ["A", "B", "C"]
     if "stage_a" in entry.depends_on:
         stages.remove("A")
@@ -194,19 +194,19 @@ def condition_architecture(campaign: Campaign, condition: str, overrides: list[s
 
 
 def tuning_seed(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> int:
-    from .lightgbm_baseline import lightgbm_settings
+    from .xgboost_baseline import xgboost_settings
 
-    return int(lightgbm_settings(load_config(campaign.entry(condition).config_path, overrides))["tuning"]["seed"])
+    return int(xgboost_settings(load_config(campaign.entry(condition).config_path, overrides))["tuning"]["seed"])
 
 
 def needs_tuning(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> bool:
-    return condition_architecture(campaign, condition, overrides) == "pooled_lightgbm"
+    return condition_architecture(campaign, condition, overrides) == "pooled_xgboost"
 
 
 def tuning_complete(
     campaign: Campaign, condition: str, output_root: str | None = None, overrides: list[str] | None = None,
 ) -> bool:
-    from .lightgbm_baseline import tuning_complete as _complete
+    from .xgboost_baseline import tuning_complete as _complete
 
     seed = tuning_seed(campaign, condition, overrides)
     config = resolve_unit_config(campaign, condition, seed, output_root=output_root, overrides=overrides)
@@ -272,7 +272,7 @@ def plan_units(
         for condition in order:
             entry = campaign.entry(condition)
             stages = stages_for(entry, architectures[condition])
-            if architectures[condition] == "pooled_lightgbm" and (condition, "tuning") not in scheduled:
+            if architectures[condition] == "pooled_xgboost" and (condition, "tuning") not in scheduled:
                 done = tuning_complete(campaign, condition, output_root, overrides)
                 started = os.path.isdir(os.path.join(paths.output_root(output_root), "runs", condition, "tuning"))
                 status = "complete" if done else ("in_progress" if started else "pending")
@@ -335,10 +335,10 @@ def run_campaign(
             if still_missing:
                 print(f"[campaign] skipping {unit.condition} seed {unit.seed}: needs {', '.join(still_missing)}")
                 continue
-        uses_lightgbm = unit.kind == "tuning" or unit.stages == LIGHTGBM_STAGES
+        uses_trees = unit.kind == "tuning" or unit.stages == TREE_STAGES
         command = [
             sys.executable, "-u", "-m",
-            "dmoe.training.run_lightgbm_unit" if uses_lightgbm else "dmoe.training.run_unit",
+            "dmoe.training.run_xgboost_unit" if uses_trees else "dmoe.training.run_unit",
             "--campaign", campaign.path,
             "--condition", unit.condition,
             "--seed", str(unit.seed),

@@ -21,7 +21,7 @@ def test_units_are_seed_major_with_m_first(tmp_path):
     b3 = next(u for u in units if u.condition == "B3" and u.seed == 3)
     assert b3.waits_for == ["M seed 3 Stage A", "M seed 3 Stage B"] and not b3.missing
     b4 = next(u for u in units if u.condition == "B4" and u.seed == 3 and u.kind == "train")
-    assert b4.waits_for == ["B4 tuning"] and b4.stages == ["lightgbm"] and not b4.missing
+    assert b4.waits_for == ["B4 tuning"] and b4.stages == ["xgboost"] and not b4.missing
     a1 = next(u for u in units if u.condition == "A1" and u.seed == 3)
     assert a1.waits_for == [] and a1.stages == ["A", "B", "C"]
 
@@ -37,7 +37,7 @@ def test_missing_parent_is_named(tmp_path):
 
 def test_stage_reuse_per_condition():
     campaign = load_campaign()
-    expected = {"M": ["A", "B", "C"], "B2": ["B", "C"], "B3": ["C"], "B4": ["lightgbm"],
+    expected = {"M": ["A", "B", "C"], "B2": ["B", "C"], "B3": ["C"], "B4": ["xgboost"],
                 "A1": ["A", "B", "C"], "A2": ["C"], "A3": ["B", "C"]}
     from dmoe.training.campaign import condition_architecture
 

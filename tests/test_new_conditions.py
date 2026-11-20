@@ -1,4 +1,4 @@
-"""A1 (no contrastive loss), A2 (uniform expert average) and B4 (pooled LightGBM)."""
+"""A1 (no contrastive loss), A2 (uniform expert average) and B4 (pooled XGBoost)."""
 import json
 import os
 
@@ -114,35 +114,47 @@ def test_m_encoder_is_rejected_for_a1(trained):
 def test_b4_tuning_log_and_choice(trained):
     tuning = os.path.join(trained["output"], "runs", "B4", "tuning")
     log = pd.read_csv(os.path.join(tuning, "Tuning_Log.csv"))
-    assert len(log) == 4 and log["val_macro_f1"].notna().all()
-    sample = json.load(open(os.path.join(tuning, "training_sample.json")))
-    assert set(log["train_rows"]) == {sample["sample_rows"]} and sample["sample_rows"] < sample["total_rows"]
+    assert len(log) == 4 and log["val_macro_f1"].notna().all() and set(log["device"]) == {"cpu"}
+    assert log["train_rows"].nunique() == 1  # all training rows, the same for every configuration
     assert not os.path.exists(os.path.join(tuning, "pilot.json"))  # the tests disable the pilot
     chosen = json.load(open(os.path.join(tuning, "chosen.json")))
     best = log.sort_values("val_macro_f1", ascending=False, kind="stable").iloc[0]
     assert chosen["val_macro_f1"] == pytest.approx(best["val_macro_f1"])
     assert chosen["tuning_seed"] == 0 and chosen["seed_max_rounds"] in (40, 60)
+    assert set(chosen["chosen"]) == {"learning_rate", "max_leaves"}
+
+
+def test_b4_trains_on_all_training_rows(trained):
+    from dmoe.training.campaign import load_campaign, resolve_unit_config
+    from dmoe.training.out_of_core_data import prepare_out_of_core_data
+    from synthetic import FAST_OVERRIDES
+
+    config = resolve_unit_config(load_campaign(), "B4", 0, output_root=trained["output"], overrides=FAST_OVERRIDES)
+    rows = len(prepare_out_of_core_data(config).data.train.class_idx)
+    chosen = json.load(open(os.path.join(trained["output"], "runs", "B4", "tuning", "chosen.json")))
+    assert chosen["train_rows"] == rows
 
 
 def test_b4_run_outputs(trained):
     run = _run(trained["output"], "B4")
     manifest = json.load(open(os.path.join(run, "manifest.json")))
-    assert manifest["total_parameters"] is None and manifest["model_size"]["lightgbm_trees"] > 0
-    assert manifest["stages_trained"] == ["lightgbm"] and manifest["environment"]["lightgbm"]
-    assert manifest["selected_epochs"]["lightgbm_best_round"] % 10 == 0
+    assert manifest["total_parameters"] is None and manifest["model_size"]["xgboost_trees"] > 0
+    assert manifest["stages_trained"] == ["xgboost"] and manifest["environment"]["xgboost"]
+    assert manifest["selected_epochs"]["xgboost_best_round"] % 10 == 0
     record = PredictionRecord.load(os.path.join(run, "eval", "test", "Test_Predictions.npz"))
     assert record.gate is None and record.expert_confusion is None and record.reliability is None
     assert record.roc_positive.sum() > 0
     resources = pd.read_csv(os.path.join(run, "eval", "Resource_Accounting.csv"), keep_default_na=False).iloc[0]
     assert resources["total_parameters"] == "n/a" and resources["stored_linear_macs"] == "n/a"
-    assert int(resources["lightgbm_trees"]) == manifest["model_size"]["lightgbm_trees"]
+    assert int(resources["xgboost_trees"]) == manifest["model_size"]["xgboost_trees"]
+    assert int(resources["xgboost_trees"]) == record.num_classes * int(resources["xgboost_best_round"])  # one per class
     history = pd.read_csv(os.path.join(run, "Training_History.csv"))
-    assert set(history["encoder_role"]) == {"lightgbm"} and history["val_macro_f1"].notna().all()
+    assert set(history["encoder_role"]) == {"xgboost"} and history["val_macro_f1"].notna().all()
 
 
 def test_b4_sample_weights_equal_m_class_weights():
-    from dmoe.training.lightgbm_baseline import class_weights
     from dmoe.training.out_of_core_train import _loss_weights
+    from dmoe.training.xgboost_baseline import class_weights
 
     labels = np.repeat(np.arange(5), [1000, 300, 50, 7, 1])
     expected = _loss_weights(labels, 6, "cpu").numpy()
@@ -150,134 +162,67 @@ def test_b4_sample_weights_equal_m_class_weights():
     assert class_weights(labels, 6)[5] == 0 and np.mean(class_weights(labels, 6)[:5]) == pytest.approx(1.0)
 
 
-def test_b4_capped_sample_keeps_small_classes_and_is_fixed():
-    from dmoe.training.lightgbm_baseline import capped_sample
-
-    labels = np.random.default_rng(3).permutation(np.repeat(np.arange(5), [70_000, 20_000, 9_000, 1_000, 30]))
-    first, summary = capped_sample(labels, 0.1, seed=0)
-    again, _ = capped_sample(labels, 0.1, seed=0)
-    np.testing.assert_array_equal(first, again)
-    assert np.all(np.diff(first) > 0) and len(first) <= 10_003
-    kept = np.bincount(labels[first], minlength=5)
-    cap = summary["cap_per_class"]
-    # the two smallest classes keep every row; the larger ones are capped at the same count
-    assert kept[3] == 1_000 and kept[4] == 30 and kept[0] == kept[1] == kept[2] == cap
-    assert 10_003 - 3 <= len(first) <= 10_003  # budget floor(0.1 * 100,030); the cap rounds down
-    other, _ = capped_sample(labels, 0.1, seed=1)
-    assert not np.array_equal(first, other)
-    whole, info = capped_sample(labels, 1.0, seed=0)
-    assert len(whole) == len(labels) and info["cap_per_class"] == 70_000
-
-
-def test_b4_sample_weights_preserve_m_class_totals():
-    from dmoe.training.lightgbm_baseline import capped_sample, class_weights, sample_weights
-
-    labels = np.random.default_rng(4).permutation(np.repeat(np.arange(4), [50_000, 8_000, 900, 40]))
-    indices, _ = capped_sample(labels, 0.1, seed=0)
-    weights = sample_weights(labels, indices, 5)
-    base = class_weights(labels, 5)
-    for label in range(4):
-        total_full = base[label] * np.sum(labels == label)
-        assert weights[labels[indices] == label].sum() == pytest.approx(total_full)
-    # classes kept whole carry exactly M's per-row class weight
-    np.testing.assert_allclose(weights[labels[indices] == 3], base[3])
-    full, _ = capped_sample(labels, 1.0, seed=0)
-    np.testing.assert_allclose(sample_weights(labels, full, 5), base[labels])
-
-
-def test_b4_time_limit_stops_tuning_before_training(tmp_path):
+def test_b4_default_settings_are_declared():
     from dmoe.training.campaign import load_campaign
     from dmoe.training.config import load_config
-    from dmoe.training.lightgbm_baseline import PILOT_FILE, check_projected_time
+    from dmoe.training.xgboost_baseline import grid_configs, xgboost_settings
 
-    config = load_config(load_campaign().entry("B4").config_path)
-    config["lightgbm"]["tuning"]["max_projected_hours"] = 24
-    pilot = {"seconds_per_round": 100.0, "rows": 1000, "projected_hours_grid": 30.0,
-             "projected_hours_per_run_at_max_rounds": 7.5}
-    (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
-    with pytest.raises(RuntimeError, match="above the declared 24 h limit"):
-        check_projected_time(config, None, str(tmp_path), None)
-    pilot["projected_hours_grid"] = 20.0
-    (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
-    assert check_projected_time(config, None, str(tmp_path), None)["projected_hours_grid"] == 20.0
-    pilot["projected_hours_grid"] = 300.0  # the default (no limit) only records the pilot
-    (tmp_path / PILOT_FILE).write_text(json.dumps(pilot))
-    config["lightgbm"]["tuning"]["max_projected_hours"] = None
-    assert check_projected_time(config, None, str(tmp_path), None)["projected_hours_grid"] == 300.0
-
-
-def test_b4_materialize_reads_sparse_indices():
-    from dmoe.training.lightgbm_baseline import _materialize
-
-    rows = np.arange(5_000 * 3, dtype=np.float32).reshape(5_000, 3)
-    indices = np.array([0, 7, 999, 1_000, 1_001, 2_500, 4_999])
-    np.testing.assert_array_equal(_materialize(rows, indices, chunk_rows=1_000), rows[indices])
-    np.testing.assert_array_equal(_materialize(rows, None, chunk_rows=1_000), rows)
-
-
-def test_b4_default_sample_and_pilot_are_declared():
-    from dmoe.training.campaign import load_campaign
-    from dmoe.training.config import load_config
-    from dmoe.training.lightgbm_baseline import grid_configs, lightgbm_settings
-
-    settings = lightgbm_settings(load_config(load_campaign().entry("B4").config_path))
-    assert settings["tuning"]["max_projected_hours"] is None and settings["tuning"]["pilot_rounds"] == 20
-    assert settings["training_sample"] == {"target_fraction": 0.1, "seed": 0}
+    settings = xgboost_settings(load_config(load_campaign().entry("B4").config_path))
     assert grid_configs(settings) == [
-        {"learning_rate": 0.05, "num_leaves": 63}, {"learning_rate": 0.05, "num_leaves": 255},
-        {"learning_rate": 0.1, "num_leaves": 63}, {"learning_rate": 0.1, "num_leaves": 255},
+        {"learning_rate": 0.05, "max_leaves": 63}, {"learning_rate": 0.05, "max_leaves": 255},
+        {"learning_rate": 0.1, "max_leaves": 63}, {"learning_rate": 0.1, "max_leaves": 255},
     ]
-    assert settings["params"]["bagging_fraction"] == settings["params"]["feature_fraction"] == 0.8
+    params = settings["params"]
+    assert params["subsample"] == params["colsample_bytree"] == 0.8 and params["reg_lambda"] == 1.0
+    assert params["grow_policy"] == "lossguide" and params["max_depth"] == 0
+    assert settings["patience_rounds"] == 200 and settings["max_rounds"] == 2000 and settings["device"] == "auto"
+    assert settings["tuning"] == {"seed": 0, "pilot_rounds": 20}
 
 
 def test_b4_forbidden_settings_are_rejected():
-    from dmoe.training.lightgbm_baseline import lightgbm_settings
+    from dmoe.training.xgboost_baseline import xgboost_settings
 
-    base = {"params": {"objective": "multiclass"}, "grid": {}, "max_rounds": 10, "eval_every_rounds": 10,
-            "patience_rounds": 10, "checkpoint_rounds": 10, "tuning": {},
-                "training_sample": {"target_fraction": 0.1, "seed": 0}}
-    for key in ("is_unbalance", "class_weight", "boosting"):
+    base = {"params": {}, "grid": {}, "max_rounds": 10, "eval_every_rounds": 10, "patience_rounds": 10,
+            "checkpoint_rounds": 10, "tuning": {}, "device": "cpu"}
+    for key in ("scale_pos_weight", "objective", "booster", "max_delta_step", "seed"):
         with pytest.raises(ValueError, match="forbids"):
-            lightgbm_settings({"lightgbm": {**base, "params": {key: "x"}}})
+            xgboost_settings({"xgboost": {**base, "params": {key: "x"}}})
 
 
-class _Arrays:
-    """Small in-memory stand-in for ``PreparedArrays``."""
-
+class _Matrices:
     def __init__(self):
+        import xgboost as xgb
+
         rng = np.random.default_rng(0)
-        self.x = rng.normal(size=(4000, 5)).astype(np.float32)
-        self.y = ((self.x[:, 0] > 0).astype(int) + (self.x[:, 1] > 1)).astype(np.int32)
-        self.x_val = rng.normal(size=(1500, 5)).astype(np.float32)
-        self.y_val = ((self.x_val[:, 0] > 0).astype(int) + (self.x_val[:, 1] > 1)).astype(np.int32)
-        self.weights = np.ones(len(self.y))
-        self.rows = len(self.y)
-        self.feature_columns = [f"f{i}" for i in range(5)]
-        self.dataset_params = {"max_bin": 63, "verbose": -1, "num_threads": 2, "feature_pre_filter": False}
+        x = rng.normal(size=(4000, 5)).astype(np.float32)
+        y = ((x[:, 0] > 0).astype(int) + (x[:, 1] > 1)).astype(np.int32)
+        x_val = rng.normal(size=(1500, 5)).astype(np.float32)
+        self.y_val = ((x_val[:, 0] > 0).astype(int) + (x_val[:, 1] > 1)).astype(np.int32)
+        names = [f"f{i}" for i in range(5)]
+        self.train = xgb.QuantileDMatrix(x, label=y, feature_names=names, max_bin=63)
+        self.val = xgb.QuantileDMatrix(x_val, label=self.y_val, feature_names=names, ref=self.train, max_bin=63)
+        self.rows, self.num_classes = len(y), 3
 
-    def datasets(self):
-        from dmoe.training.lightgbm_baseline import PreparedArrays
 
-        return PreparedArrays.datasets(self)
+_PARAMS = dict(objective="multi:softprob", num_class=3, tree_method="hist", device="cpu", grow_policy="lossguide",
+               max_depth=0, max_leaves=7, learning_rate=0.1, subsample=0.8, colsample_bytree=0.8, seed=5,
+               nthread=2, verbosity=0, max_bin=63)
 
 
 def test_b4_uninterrupted_runs_are_identical_and_interrupted_runs_resume(tmp_path, monkeypatch):
-    from dmoe.training import lightgbm_baseline as lb
+    from dmoe.training import xgboost_baseline as xb
 
-    params = dict(objective="multiclass", num_class=3, feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1,
-                  deterministic=True, force_row_wise=True, metric="None", verbose=-1, num_threads=2,
-                  bagging_seed=5, feature_fraction_seed=6, num_leaves=7, learning_rate=0.1)
     settings = dict(max_rounds=60, eval_every=10, patience=1000, checkpoint_rounds=20)
-    whole = lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "whole"), label="whole", **settings)
-    again = lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "again"), label="again", **settings)
+    whole = xb.train_booster(_PARAMS, _Matrices(), state_dir=str(tmp_path / "whole"), label="whole", **settings)
+    again = xb.train_booster(_PARAMS, _Matrices(), state_dir=str(tmp_path / "again"), label="again", **settings)
 
-    def trees(name):
-        return (tmp_path / name / "model_progress.txt").read_text().split("parameters:")[0]
+    def model(name):
+        return (tmp_path / name / "model_progress.ubj").read_bytes()
 
-    assert trees("whole") == trees("again") and whole["checks"] == again["checks"]
+    assert model("whole") == model("again") and whole["checks"] == again["checks"]
     assert whole["finished"] and whole["rounds_done"] == 60 and whole["resumed_after_rounds"] == []
 
-    original = lb._write_json
+    original = xb._write_json
 
     class Disconnect(Exception):
         pass
@@ -286,36 +231,35 @@ def test_b4_uninterrupted_runs_are_identical_and_interrupted_runs_resume(tmp_pat
         original(value, path)
         raise Disconnect
 
-    monkeypatch.setattr(lb, "_write_json", write_then_disconnect)
+    monkeypatch.setattr(xb, "_write_json", write_then_disconnect)
     with pytest.raises(Disconnect):
-        lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "split"), label="split", **settings)
-    monkeypatch.setattr(lb, "_write_json", original)
+        xb.train_booster(_PARAMS, _Matrices(), state_dir=str(tmp_path / "split"), label="split", **settings)
+    monkeypatch.setattr(xb, "_write_json", original)
     saved = json.loads((tmp_path / "split" / "progress.json").read_text())
     assert saved["rounds_done"] == 20 and not saved["finished"]
-    resumed = lb.train_booster(params, _Arrays(), state_dir=str(tmp_path / "split"), label="split", **settings)
+    resumed = xb.train_booster(_PARAMS, _Matrices(), state_dir=str(tmp_path / "split"), label="split", **settings)
     assert resumed["finished"] and resumed["rounds_done"] == 60 and resumed["resumed_after_rounds"] == [20]
     assert [c["round"] for c in resumed["checks"]] == [10, 20, 30, 40, 50, 60]
-    # the first 20 rounds are the same trees as the uninterrupted run
     assert [c["val_macro_f1"] for c in resumed["checks"][:2]] == [c["val_macro_f1"] for c in whole["checks"][:2]]
-    booster = lb._lgb().Booster(model_file=str(tmp_path / "split" / "model_progress.txt"))
-    assert booster.current_iteration() == 60
-    # a finished run is not retrained
-    assert lb.train_booster(params, None, state_dir=str(tmp_path / "split"), label="split", **settings) == resumed
+    booster = xb._xgb().Booster(model_file=str(tmp_path / "split" / "model_progress.ubj"))
+    assert booster.num_boosted_rounds() == 60
+    assert xb.train_booster(_PARAMS, None, state_dir=str(tmp_path / "split"), label="split", **settings) == resumed
 
 
 def test_b4_early_stopping_keeps_the_best_round(tmp_path):
-    from dmoe.training import lightgbm_baseline as lb
+    from dmoe.training import xgboost_baseline as xb
 
-    params = dict(objective="multiclass", num_class=3, deterministic=True, force_row_wise=True, metric="None",
-                  verbose=-1, num_threads=2, bagging_seed=1, feature_fraction_seed=2, num_leaves=7, learning_rate=0.3)
-    state = lb.train_booster(params, _Arrays(), max_rounds=400, eval_every=10, patience=30, checkpoint_rounds=20,
+    params = {**_PARAMS, "learning_rate": 0.3, "subsample": 1.0, "colsample_bytree": 1.0}
+    state = xb.train_booster(params, _Matrices(), max_rounds=400, eval_every=10, patience=30, checkpoint_rounds=20,
                              state_dir=str(tmp_path / "run"), label="es")
     assert state["finished"] and state["stopped_early"]
     assert state["rounds_done"] - state["best_round"] >= 30
     assert state["best_val_macro_f1"] == max(c["val_macro_f1"] for c in state["checks"])
-    text = lb.final_model_text(str(tmp_path / "run"), state["best_round"])
-    booster = lb._lgb().Booster(model_str=text)
-    assert booster.current_iteration() == state["best_round"]
+    model = xb.XGBoostModel(xb.final_model_bytes(str(tmp_path / "run"), state["best_round"]),
+                            ["a", "b", "c"], [f"f{i}" for i in range(5)], device="cpu")
+    assert model.best_round() == state["best_round"] and model.num_trees() == 3 * state["best_round"]
+    assert model.total_leaves() > 0
+    assert model.predict_proba(np.zeros((4, 5), dtype=np.float32)).shape == (4, 3)
 
 
 # ---------------------------------------------------------------- post-hoc analyses
@@ -332,20 +276,6 @@ def _cli(name, trained, *args):
     sets = [arg for override in FAST_OVERRIDES for arg in ("--set", override)]
     return subprocess.run([sys.executable, os.path.join(repo, "scripts", name), *roots, *sets, *args],
                           capture_output=True, text=True, cwd=repo)
-
-
-def test_b4_sample_sensitivity_reuses_main_run_and_trains_other_fractions(trained):
-    result = _cli("lightgbm_sample_sensitivity.py", trained, "--set", "lightgbm.sample_sensitivity.fractions=[0.25]")
-    assert result.returncode == 0, result.stderr
-    folder = os.path.join(trained["output"], "runs", "B4")
-    table = pd.read_csv(os.path.join(folder, "sample_sensitivity", "Sample_Sensitivity.csv"))
-    assert list(table["target_fraction"]) == [0.25, 0.5] and list(table["main"]) == [False, True]
-    assert table["train_rows"].iloc[0] < table["train_rows"].iloc[1]
-    assert table[["val_macro_f1", "test_macro_f1"]].notna().all().all()
-    chosen = json.load(open(os.path.join(folder, "tuning", "chosen.json")))
-    assert table["val_macro_f1"].iloc[1] == pytest.approx(chosen["val_macro_f1"])
-    again = _cli("lightgbm_sample_sensitivity.py", trained, "--set", "lightgbm.sample_sensitivity.fractions=[0.25]")
-    assert again.returncode == 0 and "sample 0.25" not in again.stdout  # resumable: nothing retrained
 
 
 def test_bias_offsets_fit_on_weighted_subset_and_improve_macro_f1():

@@ -11,12 +11,12 @@ import json
 import os
 
 
-def _is_lightgbm_bundle(path: str) -> bool:
+def _is_tree_bundle(path: str) -> bool:
     config = os.path.join(path, "config.json")
     if not os.path.isfile(config):
         return False
     with open(config) as handle:
-        return json.load(handle).get("architecture") == "pooled_lightgbm"
+        return json.load(handle).get("architecture") == "pooled_xgboost"
 
 
 def main() -> None:
@@ -30,10 +30,10 @@ def main() -> None:
     parser.add_argument("--chunk-rows", type=int, default=262_144)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
-    if _is_lightgbm_bundle(args.bundle):
-        from dmoe.openmp import prepare_for_lightgbm
+    if _is_tree_bundle(args.bundle):
+        from dmoe.openmp import prepare_for_trees
 
-        prepare_for_lightgbm()  # B4: load LightGBM before torch (see dmoe.openmp)
+        prepare_for_trees()  # B4: load XGBoost before torch (see dmoe.openmp)
     import pandas as pd
 
     from dmoe.evaluation.evaluate import evaluate

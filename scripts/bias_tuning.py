@@ -17,14 +17,14 @@ from __future__ import annotations
 import argparse
 import os
 
-from dmoe.openmp import prepare_for_lightgbm
+from dmoe.openmp import prepare_for_trees
 
-prepare_for_lightgbm()  # B4 bundles load LightGBM; before anything imports torch (see dmoe.openmp)
+prepare_for_trees()  # B4 bundles load XGBoost; before anything imports torch (see dmoe.openmp)
 
 from _common import add_root_arguments, apply_roots  # noqa: E402
 
 from dmoe.evaluation.bias_tuning import BIAS_FILE, tune_run, write_summary  # noqa: E402
-from dmoe.inference.bundle import LIGHTGBM_BUNDLE_FILE, load_bundle  # noqa: E402
+from dmoe.inference.bundle import load_bundle  # noqa: E402
 from dmoe.training.campaign import load_campaign, resolve_unit_config  # noqa: E402
 from dmoe.training.config import CAMPAIGN_CONFIG  # noqa: E402
 from dmoe.training.out_of_core_data import prepare_out_of_core_data  # noqa: E402
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> None:
             if not os.path.isdir(bundle_dir):
                 print(f"[bias] {condition} seed {seed}: no bundle, skipped", flush=True)
                 continue
-            bundle = load_bundle(bundle_dir, "cpu" if is_lightgbm_bundle(bundle_dir) else device)
+            bundle = load_bundle(bundle_dir, device)
             if bundle.preprocessing["signature"] != context.preprocessing_signature:
                 raise SystemExit(f"{bundle_dir} was trained on a different prepared split")
             result = tune_run(bundle, context, os.path.join(run, "eval", BIAS_FILE), chunk_rows=chunk_rows)
@@ -68,10 +68,6 @@ def main(argv: list[str] | None = None) -> None:
                   f"{result['val']['raw']['macro_f1']:.4f} -> {result['val']['tuned']['macro_f1']:.4f})", flush=True)
     for name, path in write_summary(output, conditions, seeds).items():
         print(f"[bias] wrote {path}", flush=True)
-
-
-def is_lightgbm_bundle(bundle_dir: str) -> bool:
-    return os.path.isfile(os.path.join(bundle_dir, LIGHTGBM_BUNDLE_FILE))
 
 
 if __name__ == "__main__":

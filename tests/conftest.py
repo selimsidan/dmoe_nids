@@ -4,11 +4,11 @@ from __future__ import annotations
 import os
 import sys
 
-from dmoe.openmp import prepare_for_lightgbm  # noqa: E402
+from dmoe.openmp import prepare_for_trees  # noqa: E402
 
 # The tests train every condition, B4 included, in this one process; the campaign uses one
-# process per unit. LightGBM is loaded before torch and torch keeps one thread (dmoe.openmp).
-prepare_for_lightgbm()
+# process per unit. XGBoost is loaded before torch and torch keeps one thread (dmoe.openmp).
+prepare_for_trees()
 
 import pytest  # noqa: E402
 

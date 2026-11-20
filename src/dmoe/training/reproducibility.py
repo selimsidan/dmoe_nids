@@ -70,9 +70,9 @@ def environment_info() -> dict:
         "cpu_count": os.cpu_count(),
     }
     try:
-        import lightgbm
+        import xgboost
 
-        info["lightgbm"] = lightgbm.__version__
+        info["xgboost"] = xgboost.__version__
     except ImportError:
-        info["lightgbm"] = None
+        info["xgboost"] = None
     return info
