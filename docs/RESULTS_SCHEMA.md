@@ -107,6 +107,8 @@ _epochs_completed, _wall_seconds, _selected_epoch`, totals), and test
 inference cost (`test_inference_wall_seconds`, `test_inference_rows_per_second`,
 `test_inference_microseconds_per_row`, `test_inference_device`,
 `test_peak_memory_bytes`).
+A1 has no encoder: `encoder_parameters` is 0 and its Stage-A columns are empty
+(it has no Stage A); its Training_History.csv holds Stage B and C only.
 
 For B4 the parameter and MAC columns read `n/a`; instead it reports
 `xgboost_trees` (one per class and round), `xgboost_total_leaves`,

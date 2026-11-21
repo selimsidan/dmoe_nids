@@ -1,6 +1,8 @@
 """Expert banks for the MoE conditions.
 
 ``DatasetExpertBank`` holds one ``Expert`` per active dataset (M, A1, A2, B3).
+In M, A2 and B3 an expert is linear on the 64-wide encoder output; in A1 it
+reads the 47 standardized features through one hidden layer (47-73-22).
 Every expert predicts the full 22-class vocabulary.
 
 ``forward`` is the dense path and runs every expert on every row.

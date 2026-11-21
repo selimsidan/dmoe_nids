@@ -31,15 +31,18 @@ def test_different_seed_differs(trained):
 
 
 def test_dependent_conditions_reuse_m_weights(trained):
-    """B3 and A2 use M's Stage A+B of the same seed unchanged; A1 trains its own experts."""
+    """B3 and A2 use M's Stage A+B of the same seed unchanged; A1 has no encoder and its own experts."""
     root = trained["output"]
     m_bank = torch.load(os.path.join(root, "runs", "M", "seed0", "checkpoints", "stage_B", "stage_b_expert_bank.pt"))["expert_bank_state"]
     m_encoder = torch.load(os.path.join(root, "runs", "M", "seed0", "checkpoints", "stage_A", "stage_a_encoder.pt"))["encoder_state"]
-    for condition, own_weights in (("B3", False), ("A2", False), ("A1", True)):
+    for condition in ("B3", "A2"):
         state = _stage_c(root, condition, 0)
-        same_experts = all(torch.equal(state[f"expert_bank.{k}"], v) for k, v in m_bank.items())
-        same_encoder = all(torch.equal(state[f"encoder.{k}"], v) for k, v in m_encoder.items())
-        assert same_experts is (not own_weights) and same_encoder is (not own_weights), condition
+        assert all(torch.equal(state[f"expert_bank.{k}"], v) for k, v in m_bank.items()), condition
+        assert all(torch.equal(state[f"encoder.{k}"], v) for k, v in m_encoder.items()), condition
+    a1 = _stage_c(root, "A1", 0)
+    assert not any(key.startswith("encoder.") for key in a1)  # identity encoder: no weights
+    assert a1["expert_bank.experts.0.net.0.weight"].shape == (73, 47)  # its own 47-73-22 experts
+    assert m_bank["experts.0.net.0.weight"].shape == (m_bank["experts.0.net.0.weight"].shape[0], 64)
 
 
 def test_b4_same_seed_identical_different_seed_differs(trained, tmp_path, monkeypatch):

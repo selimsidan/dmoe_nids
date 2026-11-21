@@ -115,10 +115,16 @@ def checkpoint_dir(condition: str, seed: int, output_root: str | None = None) ->
 TREE_STAGES = ["xgboost"]
 
 
-def stages_for(entry: ConditionEntry, architecture: str | None = None) -> list[str]:
+def stages_for(entry: ConditionEntry, architecture: str | None = None, identity_encoder: bool = False) -> list[str]:
+    """Stages a unit trains itself. A condition with an identity encoder (A1) has no Stage A."""
     if architecture == "pooled_xgboost":
         return list(TREE_STAGES)
     stages = ["A", "B", "C"]
+    if identity_encoder:
+        if "stage_a" in entry.depends_on:
+            raise ValueError(f"condition {entry.id} has no encoder (model.encoder.kind: identity) "
+                             "and cannot depend on a Stage A")
+        stages.remove("A")
     if "stage_a" in entry.depends_on:
         stages.remove("A")
     if "stage_b" in entry.depends_on:
@@ -143,7 +149,7 @@ def resolve_unit_config(
     config["data"]["split_mode"] = campaign.split_mode
     training = config.setdefault("training", {})
     training["checkpoint_dir"] = checkpoint_dir(condition, seed, root)
-    training["stages"] = stages_for(entry, config["architecture"])
+    training["stages"] = stages_for(entry, config["architecture"], _identity_encoder(config))
     training["save_epoch_history"] = True
     for key, parent in entry.depends_on.items():
         stage = "A" if key == "stage_a" else "B"
@@ -191,6 +197,17 @@ def _final_checkpoint(config: dict) -> str:
 
 def condition_architecture(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> str:
     return load_config(campaign.entry(condition).config_path, overrides)["architecture"]
+
+
+def _identity_encoder(config: dict) -> bool:
+    from ..models.encoder import is_identity_encoder
+
+    return config["architecture"] != "pooled_xgboost" and is_identity_encoder(config["model"]["encoder"])
+
+
+def condition_stages(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> list[str]:
+    config = load_config(campaign.entry(condition).config_path, overrides)
+    return stages_for(campaign.entry(condition), config["architecture"], _identity_encoder(config))
 
 
 def tuning_seed(campaign: Campaign, condition: str, overrides: list[str] | None = None) -> int:
@@ -268,10 +285,11 @@ def plan_units(
     units: list[Unit] = []
     scheduled: set[tuple[str, int | str]] = set()
     architectures = {condition: condition_architecture(campaign, condition, overrides) for condition in order}
+    condition_stage_lists = {condition: condition_stages(campaign, condition, overrides) for condition in order}
     for seed in seed_list:
         for condition in order:
             entry = campaign.entry(condition)
-            stages = stages_for(entry, architectures[condition])
+            stages = condition_stage_lists[condition]
             if architectures[condition] == "pooled_xgboost" and (condition, "tuning") not in scheduled:
                 done = tuning_complete(campaign, condition, output_root, overrides)
                 started = os.path.isdir(os.path.join(paths.output_root(output_root), "runs", condition, "tuning"))

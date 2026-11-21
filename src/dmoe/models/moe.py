@@ -3,6 +3,7 @@
 In the shared-encoder topology the encoder output ``z`` feeds both the gate and
 the experts. A bank with ``expects_raw_input=True`` (A3, private encoders)
 consumes ``x`` directly; there the model's ``encoder`` is the gate encoder.
+In A1 the encoder is the identity (``IdentityEncoder``), so ``z = x``.
 Both topologies expose the same dataset-blind ``forward(x)``::
 
     expert_probs   = softmax(expert_logits, dim=-1)                  # (B, D, C)

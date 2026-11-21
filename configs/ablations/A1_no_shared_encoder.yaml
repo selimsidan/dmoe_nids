@@ -1,0 +1,22 @@
+condition: A1
+display_name: No shared encoder (capacity matched)
+role: ablation
+description: >
+  M without the shared encoder: the gate and the four dataset experts read the
+  47 standardized features directly (identity encoder, no Stage A). To keep
+  the parameter budget of M (22,420), each expert gets one hidden layer,
+  47-73-22 (ReLU, dropout 0.2; 5,132 parameters), and the gate keeps M's
+  shape, 47-32-4 (1,668). With the 4 x 22 reliability matrix R (88) the total
+  is 4 x 5,132 + 1,668 + 88 = 22,284 (0.6% below M; a hidden width of 74
+  would give 22,580, 0.7% above). Stage B (each expert on its own dataset,
+  10 epochs, its own class weights) and Stage C (experts frozen, gate and R
+  trained, best validation macro-F1) are exactly M's, with M's
+  hyperparameters, not retuned. A1 reuses nothing from M.
+expected_total_parameters: 22284
+parameter_tolerance: 0.0
+overrides:
+  architecture: moe_dataset_no_encoder_class_conditional
+  model:
+    encoder: {kind: identity}
+    expert: {hidden_dims: [73], dropout: 0.2}
+    gate: {hidden_dims: [32], routing: dense}

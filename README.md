@@ -15,7 +15,7 @@ every number, table and figure of the paper (TODO: paper reference).
 |---|---|
 | Method | dataset-expert MoE (condition **M**) |
 | Baselines | **B2** capacity-matched pooled MLP, **B3** hard-routing two-stage baseline, **B4** pooled XGBoost |
-| Ablations | **A1** no contrastive loss, **A2** no gating (uniform expert average), **A3** private encoders |
+| Ablations | **A1** no shared encoder (capacity matched), **A2** no gating (uniform expert average), **A3** private encoders |
 | Seeds | 5 per condition (0 to 4), one fixed train/validation/test split |
 | Headline metric | test macro-F1 (selection always on validation macro-F1) |
 
@@ -68,8 +68,9 @@ the CSV's `Attack` column to the 22 classes so the predictions can be scored.
    python scripts/run_campaign.py --execute    # trains all 7 conditions x 5 seeds
    ```
    M is trained first for each seed; B2, B3, A2 and A3 reuse its Stage A (B3
-   and A2 also its Stage B). A1 trains its own stages. B4 (XGBoost on all rows,
-   A100 GPU) tunes once and then trains each seed. Interrupted runs resume.
+   and A2 also its Stage B). A1 has no encoder (no Stage A) and trains its own
+   Stage B and C, independent of M. B4 (XGBoost on all rows, A100 GPU) tunes
+   once and then trains each seed. Interrupted runs resume.
 3. **Aggregate and build the tables.**
    ```bash
    python scripts/aggregate.py

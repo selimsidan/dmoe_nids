@@ -69,7 +69,7 @@ SOURCE_ARCHITECTURE = {  # A3 is new in the release; its source counterpart is t
 }
 
 
-@pytest.mark.parametrize("condition", ["M", "B2", "B3", "A1"])  # A2 (uniform) and B4 have no source counterpart
+@pytest.mark.parametrize("condition", ["M", "B2", "B3"])  # A1 (no encoder), A2 (uniform) and B4 have no source counterpart
 def test_build_model_matches_source(condition, tmp_path):
     from dmoe.training.campaign import load_campaign
     from dmoe.training.config import load_config

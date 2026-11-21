@@ -1,9 +1,10 @@
 """Stage A/B/C training on the disk-backed NF-v3 data with bounded memory.
 
-Stage A trains the shared encoder (probe CE + balanced SupCon; CE only for
-A1) on all pooled training rows. Stage B freezes it and trains the experts:
-one expert per dataset on that dataset's rows (M, A1), or a private encoder
-+ head per dataset (A3). Stage C trains the gate (and the class reliability
+Stage A trains the shared encoder (probe CE + balanced SupCon) on all pooled
+training rows. Stage B freezes it and trains the experts: one expert per
+dataset on that dataset's rows (M), or a private encoder + head per dataset
+(A3). A1 has no encoder (``model.encoder.kind: identity``) and therefore no
+Stage A: its experts and gate read the standardized features directly. Stage C trains the gate (and the class reliability
 matrix) on all pooled rows and keeps the epoch with the best validation
 macro-F1. A2 has no Stage-C training: ``assemble_uniform_stage_c`` combines
 M's encoder and experts with fixed equal weights.
@@ -30,7 +31,13 @@ from ..evaluation.validation_report import (
     write_owned_expert_validation_ooc,
     write_validation_report_ooc,
 )
-from ..models.encoder import SharedEncoder, build_encoder, resolve_encoder_config
+from ..models.encoder import (
+    SharedEncoder,
+    build_encoder,
+    encoder_output_dim,
+    is_identity_encoder,
+    resolve_encoder_config,
+)
 from ..models.losses import dataset_aux_loss, load_balance_penalty
 from ..models.moe import ClassConditionalMoEDatasetNIDS, MoEDatasetNIDS
 from ..models.representation_losses import StageARepresentationObjective, representation_config
@@ -58,6 +65,8 @@ from .model_utils import (
     bank_kind_for_architecture,
     build_expert_bank,
     build_model,
+    check_parameter_count,
+    expert_input_dim,
     expert_forward_one,
     expert_train_params,
     initialize_private_expert_encoders,
@@ -119,9 +128,13 @@ def ensure_run_contract(config: dict, context: OutOfCoreContext) -> dict:
                 stage for stage, name in (("A", STAGE_A_FILE), ("B", STAGE_B_FILE), ("C", STAGE_C_FILE))
                 if os.path.isfile(stage_file(checkpoint_dir, stage, name))
             ]
+            changed = sorted(key for key in set(previous) | set(contract)
+                             if key != "signature" and previous.get(key) != contract.get(key))
             raise ValueError(
-                f"Run contract changed for checkpoint directory {checkpoint_dir}; existing stages={completed}. "
-                "Delete that run directory or pass --force-restart to retrain it."
+                f"Run contract changed for checkpoint directory {checkpoint_dir} (differs in {changed}); "
+                f"existing stages={completed}. These checkpoints were trained with different settings "
+                "(for example an earlier condition with the same ID) and are never reused. Move that run "
+                "directory out of runs/ (to keep it) or pass --force-restart (which deletes it) to retrain."
             )
     else:
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -375,6 +388,8 @@ def run_stage_a_ooc(config: dict, context: OutOfCoreContext) -> SharedEncoder:
     device = torch.device(config["training"]["device"])
     torch.manual_seed(config.get("seed", 0))
     model_cfg = config["model"]
+    if is_identity_encoder(model_cfg["encoder"]):
+        raise ValueError("a condition with an identity encoder has no Stage A")
     encoder_role = "encoder"
     encoder = build_encoder(
         data.train.features.shape[1], model_cfg["latent_dim"],
@@ -508,6 +523,8 @@ def _frozen_encoder(
         data.train.features.shape[1], model_cfg["latent_dim"],
         resolve_encoder_config(model_cfg, role),
     ).to(device)
+    if is_identity_encoder(resolve_encoder_config(model_cfg, role)):
+        return encoder.eval()  # no parameters and no Stage A to load
     encoder.load_state_dict(load_validated_stage_a(
         config,
         stage_a_metadata(
@@ -527,9 +544,13 @@ def run_stage_b_ooc(config: dict, context: OutOfCoreContext):
     torch.manual_seed(config.get("seed", 0))
     bank_kind = bank_kind_for_architecture(config["architecture"])
     expert_names = list(data.active_datasets)
+    input_dim = data.train.features.shape[1]
+    # Expert width from the encoder config (64 for M's encoder, 47 for A1's identity encoder);
+    # the encoder is built after the bank so the bank's initialization does not depend on it.
+    width = encoder_output_dim(input_dim, config["model"]["latent_dim"], config["model"]["encoder"])
     bank = build_expert_bank(
-        bank_kind, expert_names, config["model"]["latent_dim"],
-        len(data.class_names), config["model"], input_dim=data.train.features.shape[1],
+        bank_kind, expert_names, expert_input_dim(config["architecture"], width, config["model"]),
+        len(data.class_names), config["model"], input_dim=input_dim,
     ).to(device)
     checkpoint_dir = config["training"]["checkpoint_dir"]
     warmstart_mode = config["training"].get("stage_b", {}).get("warmstart_mode", "dataset")
@@ -655,15 +676,17 @@ def build_ooc_model(config: dict, context: OutOfCoreContext, device) -> torch.nn
         data.train.features.shape[1], model_cfg["latent_dim"],
         resolve_encoder_config(model_cfg, role),
     ).to(device)
-    encoder.load_state_dict(load_validated_stage_a(
-        config,
-        stage_a_metadata(
-            config, data, split_signature=_hash(context.split_signatures),
-            feature_columns=context.feature_columns, encoder_role=role,
-        ),
-        role,
-    )["encoder_state"])
+    if not is_identity_encoder(resolve_encoder_config(model_cfg, role)):
+        encoder.load_state_dict(load_validated_stage_a(
+            config,
+            stage_a_metadata(
+                config, data, split_signature=_hash(context.split_signatures),
+                feature_columns=context.feature_columns, encoder_role=role,
+            ),
+            role,
+        )["encoder_state"])
     model = build_model(config["architecture"], encoder, data.active_datasets, data.class_names, model_cfg).to(device)
+    check_parameter_count(model, config, data.train.features.shape[1], len(data.class_names))
     stage_b = load_configured_stage_b(
         config,
         expected_dataset_names=list(model.expert_bank.dataset_names),

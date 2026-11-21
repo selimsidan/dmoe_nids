@@ -3,12 +3,16 @@
 ==================================================  =========  =====================
 architecture                                        condition  model
 ==================================================  =========  =====================
-moe_dataset_class_conditional                       M, A1      class-conditional MoE
+moe_dataset_class_conditional                       M          class-conditional MoE
 matched_dense                                       B2         encoder + matched MLP head
 moe_dataset_damex (gate.routing: top1)              B3         top-1 routed baseline
+moe_dataset_no_encoder_class_conditional            A1         class-conditional MoE, no encoder
 moe_dataset_uniform                                 A2         uniform average of the experts
 moe_dataset_private_encoders_class_conditional      A3         class-conditional MoE, private encoders
 ==================================================  =========  =====================
+
+Gate and expert input widths come from the encoder's output width
+(``encoder.latent_dim``): 64 for the MLP encoder, 47 for A1's identity encoder.
 
 B4 (``pooled_xgboost``) is not a torch model; see ``xgboost_baseline``.
 """
@@ -19,21 +23,24 @@ from torch import nn
 
 from ..models.baselines import MatchedDenseClassifier, MatchedDenseHead
 from ..models.dataset_experts import DatasetExpertBank
-from ..models.encoder import SharedEncoder, resolve_encoder_config
+from ..models.encoder import SharedEncoder, is_identity_encoder, resolve_encoder_config
 from ..models.gate import Gate, UniformGate
 from ..models.moe import ClassConditionalMoEDatasetNIDS, MoEDatasetNIDS
 from ..models.private_encoder_experts import PrivateEncoderExpertBank
 
 CLASS_CONDITIONAL_ARCHITECTURES = {
     "moe_dataset_class_conditional",
+    "moe_dataset_no_encoder_class_conditional",
     "moe_dataset_private_encoders_class_conditional",
 }
+NO_ENCODER_ARCHITECTURES = {"moe_dataset_no_encoder_class_conditional"}
 PRIVATE_ENCODER_ARCHITECTURES = {"moe_dataset_private_encoders_class_conditional"}
 UNIFORM_GATE_ARCHITECTURES = {"moe_dataset_uniform"}
 DATASET_MOE_ARCHITECTURES = {
     "moe_dataset_uniform",
     "moe_dataset_damex",
     "moe_dataset_class_conditional",
+    "moe_dataset_no_encoder_class_conditional",
     "moe_dataset_private_encoders_class_conditional",
 }
 
@@ -270,6 +277,23 @@ def apply_stage_c_trainability(model: MoEDatasetNIDS, config: dict) -> None:
             parameter.requires_grad_(False)
 
 
+def check_encoder_matches_architecture(architecture: str, model_cfg: dict) -> None:
+    """The no-encoder architecture needs ``model.encoder.kind: identity`` and nothing else may use it."""
+    identity = is_identity_encoder(model_cfg["encoder"])
+    if identity != (architecture in NO_ENCODER_ARCHITECTURES):
+        raise ValueError(
+            f"architecture {architecture!r} with model.encoder.kind={model_cfg['encoder'].get('kind', 'mlp')!r}: "
+            f"the identity encoder is used by, and only by, {sorted(NO_ENCODER_ARCHITECTURES)}"
+        )
+
+
+def expert_input_dim(architecture: str, encoder_output_width: int, model_cfg: dict) -> int:
+    """Width the experts read: the encoder output, or a private encoder's latent (A3)."""
+    if bank_kind_for_architecture(architecture) == "private_encoder":
+        return int(model_cfg["latent_dim"])
+    return int(encoder_output_width)
+
+
 def build_model(
     architecture: str,
     encoder: SharedEncoder,
@@ -277,11 +301,12 @@ def build_model(
     class_names: list[str],
     model_cfg: dict,
 ) -> MoEDatasetNIDS:
+    check_encoder_matches_architecture(architecture, model_cfg)
     bank_kind = bank_kind_for_architecture(architecture)
     bank = build_expert_bank(
         bank_kind,
         list(dataset_names),
-        model_cfg["latent_dim"],
+        expert_input_dim(architecture, encoder.latent_dim, model_cfg),
         len(class_names),
         model_cfg,
         input_dim=encoder.input_dim,
@@ -289,7 +314,7 @@ def build_model(
     if architecture in UNIFORM_GATE_ARCHITECTURES:
         gate = UniformGate(len(dataset_names))
     else:
-        gate = Gate(model_cfg["latent_dim"], len(dataset_names), model_cfg["gate"]["hidden_dims"])
+        gate = Gate(encoder.latent_dim, len(dataset_names), model_cfg["gate"]["hidden_dims"])
     routing_mode = model_cfg.get("gate", {}).get("routing", "dense")
     model_class = (
         ClassConditionalMoEDatasetNIDS
@@ -297,3 +322,26 @@ def build_model(
         else MoEDatasetNIDS
     )
     return model_class(encoder, bank, gate, class_names, routing_mode=routing_mode)
+
+
+def check_parameter_count(model: nn.Module, config: dict, input_dim: int, num_classes: int) -> int | None:
+    """Compare the built model with the condition's ``expected_total_parameters``.
+
+    The documented counts hold for the paper's data shape (``data.expected_features``
+    features, ``data.expected_classes`` classes); on other shapes (the synthetic test
+    data) the check is skipped and None is returned. ``parameter_tolerance`` is a
+    relative tolerance (0 when absent: the count must match exactly).
+    """
+    header = config.get("condition", {}) or {}
+    expected = header.get("expected_total_parameters")
+    data_cfg = config.get("data", {})
+    if expected is None or data_cfg.get("expected_features") != input_dim or data_cfg.get("expected_classes") != num_classes:
+        return None
+    actual = _parameter_count(model)
+    tolerance = float(header.get("parameter_tolerance", 0.0) or 0.0)
+    if abs(actual - int(expected)) > tolerance * int(expected):
+        raise ValueError(
+            f"{header.get('condition', config.get('architecture'))}: the built model has {actual:,} parameters, "
+            f"the config expects {int(expected):,} (parameter_tolerance {tolerance})"
+        )
+    return actual

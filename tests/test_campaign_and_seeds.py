@@ -23,7 +23,8 @@ def test_units_are_seed_major_with_m_first(tmp_path):
     b4 = next(u for u in units if u.condition == "B4" and u.seed == 3 and u.kind == "train")
     assert b4.waits_for == ["B4 tuning"] and b4.stages == ["xgboost"] and not b4.missing
     a1 = next(u for u in units if u.condition == "A1" and u.seed == 3)
-    assert a1.waits_for == [] and a1.stages == ["A", "B", "C"]
+    assert a1.waits_for == [] and a1.missing == [] and a1.stages == ["B", "C"]  # no encoder, no Stage A, nothing from M
+    assert missing_dependencies(campaign, "A1", 3, str(tmp_path)) == []
 
 
 def test_missing_parent_is_named(tmp_path):
@@ -38,10 +39,28 @@ def test_missing_parent_is_named(tmp_path):
 def test_stage_reuse_per_condition():
     campaign = load_campaign()
     expected = {"M": ["A", "B", "C"], "B2": ["B", "C"], "B3": ["C"], "B4": ["xgboost"],
-                "A1": ["A", "B", "C"], "A2": ["C"], "A3": ["B", "C"]}
-    from dmoe.training.campaign import condition_architecture
+                "A1": ["B", "C"], "A2": ["C"], "A3": ["B", "C"]}
+    from dmoe.training.campaign import condition_stages
 
-    assert {c: stages_for(campaign.entry(c), condition_architecture(campaign, c)) for c in expected} == expected
+    assert {c: condition_stages(campaign, c) for c in expected} == expected
+
+
+def test_identity_encoder_removes_stage_a_and_rejects_a_stage_a_dependency():
+    from dmoe.training.campaign import ConditionEntry
+
+    entry = ConditionEntry("X", "x.yaml")
+    assert stages_for(entry, "moe_dataset_no_encoder_class_conditional", identity_encoder=True) == ["B", "C"]
+    with pytest.raises(ValueError, match="cannot depend on a Stage A"):
+        stages_for(ConditionEntry("X", "x.yaml", {"stage_a": "M"}),
+                   "moe_dataset_no_encoder_class_conditional", identity_encoder=True)
+
+
+def test_a1_runs_alone(tmp_path):
+    """Planning A1 by itself on an empty output root: nothing blocked, nothing to wait for."""
+    units = plan_units(load_campaign(), ["A1"], [0, 1], output_root=str(tmp_path))
+    assert [(u.status, u.stages, u.waits_for, u.missing) for u in units] == [("pending", ["B", "C"], [], [])] * 2
+    config = resolve_unit_config(load_campaign(), "A1", 0, output_root=str(tmp_path))
+    assert "stage_a_checkpoint" not in config["training"] and config["run"]["depends_on"] == {}
 
 
 def test_any_seed_list_resolves(tmp_path):

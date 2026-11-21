@@ -14,9 +14,10 @@ A bundle directory holds:
   epochs, validation and test macro-F1, parameter count, commit, library
   versions, and the SHA-256 of every other file.
 
-M (and A1) additionally ship ``stage_a_encoder.safetensors`` and
+M additionally ships ``stage_a_encoder.safetensors`` and
 ``stage_b_expert_bank.safetensors`` so the conditions that reuse them can be
-retrained from its checkpoints.
+retrained from its checkpoints. (Only a unit that trains its own Stage A ships
+stage weights; A1 has no encoder and no Stage A.)
 
 B4 (XGBoost) ships ``xgboost_model.ubj`` (XGBoost's UBJSON model format) instead of
 ``model.safetensors``; everything else is the same.

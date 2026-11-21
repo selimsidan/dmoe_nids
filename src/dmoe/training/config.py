@@ -27,6 +27,7 @@ MOE_ARCHITECTURES = {
     "moe_dataset_uniform",
     "moe_dataset_damex",
     "moe_dataset_class_conditional",
+    "moe_dataset_no_encoder_class_conditional",
     "moe_dataset_private_encoders_class_conditional",
 }
 DENSE_ARCHITECTURES = {"matched_dense"}

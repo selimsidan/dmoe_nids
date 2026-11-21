@@ -7,7 +7,7 @@ from dmoe.training.campaign import load_campaign
 from dmoe.training.config import load_config
 
 CLASSES = ["Benign", *[f"class_{i}" for i in range(21)]]
-EXPECTED = {"M": 22420, "B2": 22419, "B3": 22332, "A1": 22420, "A2": 20120, "A3": 80020}  # B4: trees, no count
+EXPECTED = {"M": 22420, "B2": 22419, "B3": 22332, "A1": 22284, "A2": 20120, "A3": 80020}  # B4: trees, no count
 
 
 def _model(condition):
@@ -51,13 +51,27 @@ def test_forward_is_dataset_blind(condition):
     assert_dataset_blind_signature(model)
 
 
+def test_a1_parameter_breakdown_and_capacity_match():
+    _, model = _model("A1")
+    count = lambda module: sum(p.numel() for p in module.parameters())
+    assert count(model.encoder) == 0 and model.encoder.latent_dim == 47
+    assert [count(expert) for expert in model.expert_bank.experts] == [5132] * 4
+    assert count(model.gate) == 1668 and model.class_reliability.numel() == 88
+    assert abs(count(model) - EXPECTED["M"]) / EXPECTED["M"] < 0.01
+    from dmoe.evaluation.resource_accounting import linear_macs
+
+    _, m = _model("M")
+    assert linear_macs(model) == 21780 and linear_macs(m) == 22016
+
+
 def test_conditions_differ_from_m_only_where_documented():
     base = load_config(load_campaign().entry("M").config_path)
     a1 = load_config(load_campaign().entry("A1").config_path)
-    assert base["training"]["representation"]["objective"] == "balanced_supcon"
-    assert a1["training"]["representation"]["objective"] == "ce"
-    a1["training"]["representation"]["objective"] = "balanced_supcon"
-    for key in ("model", "training", "load_balance", "data", "architecture"):
+    assert a1["architecture"] == "moe_dataset_no_encoder_class_conditional"
+    assert a1["model"]["encoder"]["kind"] == "identity"
+    assert a1["model"]["expert"] == {"hidden_dims": [73], "dropout": 0.2}
+    assert a1["model"]["gate"] == base["model"]["gate"]
+    for key in ("training", "load_balance", "data"):
         assert a1[key] == base[key]
     a2 = load_config(load_campaign().entry("A2").config_path)
     assert a2["architecture"] == "moe_dataset_uniform"

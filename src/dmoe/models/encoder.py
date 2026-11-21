@@ -1,10 +1,17 @@
-"""Shared MLP encoder: 47 standardized features -> latent vector ``z``.
+"""Shared encoder: 47 standardized features -> representation ``z``.
 
 The encoder takes only the feature vector; it has no dataset input, so the
 representation it produces cannot depend on dataset identity. Roles:
 ``encoder`` (the shared encoder of every shared-encoder condition),
 ``gate_encoder`` and ``private_encoder`` (the A3 ablation, where the gate and
 each expert own separate encoders; both fall back to ``model.encoder``).
+
+Kinds (``model.encoder.kind``):
+
+* ``mlp``: ``SharedEncoder``, an MLP ending in a ``latent_dim`` projection.
+* ``identity``: ``IdentityEncoder``, no parameters; ``z`` is the standardized
+  feature vector itself, so its width is the input width (A1). A condition
+  with an identity encoder has no Stage A.
 """
 from __future__ import annotations
 
@@ -62,8 +69,45 @@ class SharedEncoder(nn.Module):
         raise RuntimeError("encoder contains no linear projection")
 
 
-def build_encoder(input_dim: int, latent_dim: int, encoder_cfg: dict) -> SharedEncoder:
-    """Construct an MLP encoder from an ``model.encoder``-style config block."""
+class IdentityEncoder(nn.Module):
+    """No encoder: returns the standardized features unchanged (zero parameters).
+
+    Exposes the attributes the pipeline reads from ``SharedEncoder``
+    (``input_dim``, ``latent_dim`` as the output width, ``kind``).
+    """
+
+    def __init__(self, input_dim: int) -> None:
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.latent_dim = int(input_dim)
+        self.kind = "identity"
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+    def last_layer_parameters(self):
+        return iter(())
+
+
+ENCODER_KINDS = {"mlp", "identity"}
+
+
+def is_identity_encoder(encoder_cfg: dict) -> bool:
+    kind = encoder_cfg.get("kind", "mlp")
+    if kind not in ENCODER_KINDS:
+        raise ValueError(f"encoder kind must be one of {sorted(ENCODER_KINDS)}, got {kind!r}")
+    return kind == "identity"
+
+
+def encoder_output_dim(input_dim: int, latent_dim: int, encoder_cfg: dict) -> int:
+    """Width of the encoder output, known without building the encoder."""
+    return int(input_dim) if is_identity_encoder(encoder_cfg) else int(latent_dim)
+
+
+def build_encoder(input_dim: int, latent_dim: int, encoder_cfg: dict) -> SharedEncoder | IdentityEncoder:
+    """Construct the encoder of a ``model.encoder``-style config block."""
+    if is_identity_encoder(encoder_cfg):
+        return IdentityEncoder(input_dim)
     return SharedEncoder(
         input_dim=input_dim,
         hidden_dims=list(encoder_cfg.get("hidden_dims", [])),

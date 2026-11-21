@@ -11,7 +11,7 @@ seeds, the split policy and which stages each condition reuses.
 | B2 capacity-matched pooled MLP | Stage B, C (head only) | Stage A | GPU |
 | B3 hard-routing two-stage baseline | Stage C (router only) | Stage A, Stage B | GPU |
 | B4 pooled XGBoost | its tuning (once), then one booster per seed | nothing | GPU with 40 GB memory (e.g. A100) |
-| A1 no contrastive loss | Stage A, B, C | nothing | GPU |
+| A1 no shared encoder (capacity matched) | Stage B, C (it has no encoder, so no Stage A) | nothing | GPU |
 | A2 no gating (uniform average) | nothing (Stage C is assembled, not trained) | Stage A, Stage B | GPU or CPU |
 | A3 private encoders | Stage B, C | Stage A (copied into every encoder) | GPU |
 
@@ -20,8 +20,8 @@ runs once before B4's first seed (`runs/B4/tuning/`). Units run seed by seed
 and, within a seed, in the order above, so M of a seed always exists before
 the conditions that reuse it. Sharing M's Stage A gives B2, B3, A2 and A3 the
 same encoder starting point as M, so differences come from what each condition
-changes. A1 cannot share it (its Stage A objective is the difference), and B4
-is not a neural network.
+changes. A1 has no encoder at all (that is the difference it tests), so it has
+no Stage A and depends on nothing; B4 is not a neural network.
 
 ```bash
 python scripts/run_campaign.py                              # plan: what is done, what is pending

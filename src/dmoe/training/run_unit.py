@@ -44,6 +44,7 @@ from .out_of_core_train import (
     run_stage_b_ooc,
     run_stage_c_ooc,
 )
+from ..models.encoder import is_identity_encoder
 from .reproducibility import configure_reproducibility, environment_info
 from .training_history import TRAINING_HISTORY_FILE
 
@@ -95,7 +96,10 @@ def train_unit(config: dict, context) -> torch.nn.Module:
             print(f"[run] Stage {stage} already complete; skipping", flush=True)
             continue
         function(config, context)
-    for required in (resolve_stage_a_path(config), resolve_stage_b_path(config)):
+    required_checkpoints = [resolve_stage_b_path(config)]
+    if not is_identity_encoder(config["model"]["encoder"]):  # A1 has no encoder and no Stage A
+        required_checkpoints.insert(0, resolve_stage_a_path(config))
+    for required in required_checkpoints:
         if not os.path.isfile(required):
             raise FileNotFoundError(f"missing checkpoint {required}")
     model = build_ooc_model(config, context, device)

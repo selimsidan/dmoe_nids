@@ -1,4 +1,4 @@
-"""A1 (no contrastive loss), A2 (uniform expert average) and B4 (pooled XGBoost)."""
+"""A1 (no shared encoder), A2 (uniform expert average) and B4 (pooled XGBoost)."""
 import json
 import os
 
@@ -66,42 +66,127 @@ def test_a2_reports_and_accounting(trained):
 # ---------------------------------------------------------------- A1
 
 
-def test_a1_trains_its_own_ce_only_encoder(trained):
-    a1 = torch.load(os.path.join(_run(trained["output"], "A1"), "checkpoints", "stage_A", "stage_a_encoder.pt"))
-    m = torch.load(os.path.join(_run(trained["output"], "M"), "checkpoints", "stage_A", "stage_a_encoder.pt"))
-    assert a1["representation_config"]["objective"] == "ce"
-    assert m["representation_config"]["objective"] == "balanced_supcon"
-    assert any(not torch.equal(a1["encoder_state"][k], v) for k, v in m["encoder_state"].items())
-    manifest = json.load(open(os.path.join(_run(trained["output"], "A1"), "manifest.json")))
-    assert manifest["stages_trained"] == ["A", "B", "C"] and manifest["depends_on"] == {}
-
-
-def test_a1_and_m_start_from_the_same_initialization():
-    from dmoe.models.encoder import build_encoder, resolve_encoder_config
-    from dmoe.models.representation_losses import StageARepresentationObjective
+def _a1_model():
+    from dmoe.data.registry import DATASET_NAMES
+    from dmoe.inference.bundle import build_model_for_bundle
     from dmoe.training.campaign import load_campaign
     from dmoe.training.config import load_config
 
+    config = load_config(load_campaign().entry("A1").config_path)
+    model = build_model_for_bundle({"architecture": config["architecture"], "model": config["model"], "input_dim": 47,
+                                    "dataset_names": list(DATASET_NAMES), "class_names": [f"c{i}" for i in range(22)]})
+    return config, model
+
+
+def test_a1_identity_encoder():
+    from dmoe.models.encoder import IdentityEncoder
+
+    _, model = _a1_model()
+    assert isinstance(model.encoder, IdentityEncoder) and model.encoder.latent_dim == 47
+    assert sum(p.numel() for p in model.encoder.parameters()) == 0
+    x = torch.randn(5, 47)
+    assert torch.equal(model.encoder(x), x)
+    assert model.gate.net[0].in_features == 47 and model.expert_bank.experts[0].net[0].in_features == 47
+
+
+def test_a1_trains_b_and_c_without_any_stage_a(trained):
+    run = _run(trained["output"], "A1")
+    assert not os.path.exists(os.path.join(run, "checkpoints", "stage_A"))
+    manifest = json.load(open(os.path.join(run, "manifest.json")))
+    assert manifest["stages_trained"] == ["B", "C"] and manifest["depends_on"] == {}
+    assert "stage_a" not in manifest.get("checkpoints", {})
+    bundle_files = os.listdir(os.path.join(run, "bundle"))
+    assert "stage_a_encoder.safetensors" not in bundle_files and "stage_b_expert_bank.safetensors" not in bundle_files
+    stage_c = torch.load(os.path.join(run, "checkpoints", "stage_C", "stage_c_full.pt"))["model_state"]
+    assert not any(key.startswith("encoder.") for key in stage_c)
+
+
+def test_a1_stage_b_gradients_reach_only_the_trained_expert():
+    from dmoe.training.model_utils import expert_forward_one, expert_train_params
+
+    _, model = _a1_model()
+    bank = model.expert_bank
+    x, y = torch.randn(16, 47), torch.randint(0, 22, (16,))
+    torch.nn.functional.cross_entropy(expert_forward_one(bank, 2, model.encoder(x)), y).backward()
+    assert {id(p) for p in expert_train_params(bank, 2)} == {id(p) for p in bank.experts[2].parameters()}
+    for index, expert in enumerate(bank.experts):
+        has_grad = [p.grad is not None and bool(p.grad.abs().sum() > 0) for p in expert.parameters()]
+        assert all(has_grad) if index == 2 else not any(has_grad), index
+    assert all(p.grad is None for p in model.gate.parameters()) and model.class_reliability.grad is None
+
+
+def test_a1_stage_c_trains_only_gate_and_reliability(trained):
+    from dmoe.training.model_utils import apply_stage_c_trainability
+
+    config, model = _a1_model()
+    apply_stage_c_trainability(model, config)
+    trainable = {name for name, p in model.named_parameters() if p.requires_grad}
+    assert trainable == {name for name, _ in model.named_parameters() if name.startswith("gate.")} | {"class_reliability"}
+    run = _run(trained["output"], "A1")
+    stage_b = torch.load(os.path.join(run, "checkpoints", "stage_B", "stage_b_expert_bank.pt"))["expert_bank_state"]
+    stage_c = torch.load(os.path.join(run, "checkpoints", "stage_C", "stage_c_full.pt"))["model_state"]
+    assert all(torch.equal(stage_c[f"expert_bank.{k}"], v) for k, v in stage_b.items())  # experts frozen in Stage C
+
+
+def test_parameter_count_is_checked_at_runtime():
+    from dmoe.training.model_utils import check_parameter_count
+
+    config, model = _a1_model()
+    assert check_parameter_count(model, config, 47, 22) == 22284
+    assert check_parameter_count(model, config, 47, 11) is None  # other data shapes (synthetic tests): skipped
+    wrong = {**config, "condition": {**config["condition"], "expected_total_parameters": 22420}}
+    with pytest.raises(ValueError, match="22,284 parameters, the config expects 22,420"):
+        check_parameter_count(model, wrong, 47, 22)
+    tolerant = {**config, "condition": {**config["condition"], "expected_total_parameters": 22420,
+                                        "parameter_tolerance": 0.01}}
+    assert check_parameter_count(model, tolerant, 47, 22) == 22284
+
+
+def _old_a1_contract(trained):
+    """The run contract an A1 run of the earlier condition set (M with a CE-only Stage A) wrote."""
+    contract = json.load(open(os.path.join(_run(trained["output"], "M"), "checkpoints", "run_contract.json")))
+    contract["training"]["representation"]["objective"] = "ce"
+    return contract
+
+
+def test_old_a1_checkpoints_are_rejected(trained, tmp_path):
+    from dmoe.training.campaign import load_campaign, resolve_unit_config
+    from dmoe.training.out_of_core_data import prepare_out_of_core_data
+    from dmoe.training.out_of_core_train import ensure_run_contract
+    from synthetic import FAST_OVERRIDES
+
+    config = resolve_unit_config(load_campaign(), "A1", 0, output_root=trained["output"], overrides=FAST_OVERRIDES)
+    checkpoints = config["training"]["checkpoint_dir"] = str(tmp_path / "A1" / "seed0" / "checkpoints")
+    os.makedirs(checkpoints)
+    json.dump(_old_a1_contract(trained), open(os.path.join(checkpoints, "run_contract.json"), "w"))
+    with pytest.raises(ValueError, match="Move that run directory"):
+        ensure_run_contract(config, prepare_out_of_core_data(config))
+
+
+def test_old_a1_manifest_is_not_complete(trained, tmp_path):
+    from dmoe.training.campaign import load_campaign, plan_units, resolve_unit_config, unit_complete
+    from dmoe.training.config import config_hash
+    from synthetic import FAST_OVERRIDES
+
     campaign = load_campaign()
-    states = []
-    for condition in ("M", "A1"):
-        config = load_config(campaign.entry(condition).config_path)
-        torch.manual_seed(3)
-        encoder = build_encoder(47, config["model"]["latent_dim"], resolve_encoder_config(config["model"], "encoder"))
-        objective = StageARepresentationObjective(config["model"]["latent_dim"], 22, config)
-        states.append({**encoder.state_dict(), **{f"objective.{k}": v for k, v in objective.state_dict().items()}})
-    assert states[0].keys() == states[1].keys()
-    assert all(torch.equal(states[0][k], states[1][k]) for k in states[0])  # SupCon adds no parameters
+    old = resolve_unit_config(campaign, "M", 0, output_root=str(tmp_path), overrides=FAST_OVERRIDES)
+    old["training"]["representation"]["objective"] = "ce"  # the earlier A1
+    run = os.path.join(str(tmp_path), "runs", "A1", "seed0")
+    os.makedirs(run)
+    json.dump({"status": "complete", "config_hash": config_hash(old)}, open(os.path.join(run, "manifest.json"), "w"))
+    assert not unit_complete(campaign, "A1", 0, str(tmp_path), FAST_OVERRIDES)
+    unit = plan_units(campaign, ["A1"], [0], output_root=str(tmp_path), overrides=FAST_OVERRIDES)[0]
+    assert unit.status != "complete"
 
 
-def test_m_encoder_is_rejected_for_a1(trained):
+def test_stage_a_with_another_representation_objective_is_rejected(trained):
+    """A Stage-A encoder is reused only under the representation settings it was trained with."""
     from dmoe.training.campaign import load_campaign, resolve_unit_config
     from dmoe.training.checkpoint import load_validated_stage_a
     from synthetic import FAST_OVERRIDES
 
-    config = resolve_unit_config(load_campaign(), "A1", 0, output_root=trained["output"], overrides=FAST_OVERRIDES)
-    config["training"]["stage_a_checkpoint"] = os.path.join(
-        _run(trained["output"], "M"), "checkpoints", "stage_A", "stage_a_encoder.pt")
+    config = resolve_unit_config(load_campaign(), "B2", 0, output_root=trained["output"],
+                                 overrides=[*FAST_OVERRIDES, "training.representation.objective=ce"])
     metadata = torch.load(config["training"]["stage_a_checkpoint"])["metadata"]
     expected = {key: metadata[key] for key in ("encoder", "class_names", "feature_columns", "split_signature")}
     with pytest.raises(ValueError, match="representation"):

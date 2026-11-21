@@ -150,14 +150,27 @@ Tuning protocol (pre-registered in `configs/baselines/B4_pooled_xgboost.yaml`):
 
 ## Ablations
 
-* **A1 no contrastive loss (22,420).** M with a cross-entropy-only Stage A:
-  the balanced supervised contrastive term is dropped; encoder, probe, class
-  weights, 30 epochs, optimizer and batch order are as in M (the contrastive
-  loss has no parameters, so A1 and M start from identical weights). A1 trains
-  its own Stage A, B and C per seed (about one M run). Stage B and Stage C use
-  exactly M's hyperparameters (load-balance weight 0.1, reliability penalty
-  1e-4, epochs, patience, selection rule); they were not retuned for A1. This
-  choice was fixed before A1 was run.
+* **A1 no shared encoder, capacity matched (22,284).** M without the shared
+  encoder: the gate and the four dataset experts read the 47 standardized
+  features directly (an identity encoder with no parameters), so there is no
+  Stage A and no representation learning shared across datasets. The
+  parameters M spends on its encoder (14,400) go to the experts instead: each
+  expert is 47-73-22 (one hidden layer, ReLU, dropout 0.2; 5,132 parameters)
+  instead of M's linear 64-22 (1,430). The gate keeps M's shape on the wider
+  input, 47-32-4 (1,668), and R is unchanged (4 x 22 = 88). Total
+  4 x 5,132 + 1,668 + 88 = 22,284, 0.6% below M's 22,420 (a hidden width of
+  73 is the closest; 74 would give 22,580, 0.7% above). Forward cost: 21,780
+  multiply-accumulates per row against M's 22,016.
+  Stage B is M's: each expert trains only on its own dataset's training rows,
+  with that dataset's class weights, for 10 epochs, here on the standardized
+  features. Stage C is M's: experts frozen, gate and R trained on all pooled
+  rows with the same loss, load-balance weight 0.1, reliability penalty 1e-4,
+  patience and selection rule. None of M's hyperparameters were retuned for
+  A1; this was fixed before A1 was run. A1 reuses nothing from M and depends on
+  no other condition. As in M, Stage C runs the frozen modules in training
+  mode, so the experts' dropout (0.2, after the hidden layer) is active while
+  the gate trains and off at evaluation and prediction; M's experts are
+  linear, so for M this concerns only the encoder's dropout.
 * **A2 no gating, uniform expert average (20,120).** M's Stage-A encoder and
   M's four Stage-B experts of the same seed, combined with fixed equal weights:
   `combined = (1/4) * sum_d softmax(expert_logits_d)`. No gate network, no
