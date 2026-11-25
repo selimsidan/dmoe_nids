@@ -19,13 +19,9 @@ M additionally ships ``stage_a_encoder.safetensors`` and
 retrained from its checkpoints. (Only a unit that trains its own Stage A ships
 stage weights; A1 has no encoder and no Stage A.)
 
-B4 (XGBoost) ships ``xgboost_model.ubj`` (XGBoost's UBJSON model format) instead of
-``model.safetensors``; everything else is the same.
-
 ``load_bundle`` verifies the file hashes and asserts that ``model.forward``
 takes exactly one argument (the features), so no dataset identity can reach
-the model at prediction time. For B4 it also asserts that the booster's
-features are exactly the 47 contract columns.
+the model at prediction time.
 """
 from __future__ import annotations
 
@@ -43,6 +39,7 @@ from safetensors.torch import load_file, save_file
 from ..data.out_of_core import standardized_batch
 from ..models.encoder import build_encoder, resolve_encoder_config
 from ..training.checkpoint import STAGE_A_FILE, STAGE_B_FILE, resolve_stage_a_path, resolve_stage_b_path
+from ..training.config import ARCHITECTURES
 from ..training.model_utils import PRIVATE_ENCODER_ARCHITECTURES, build_matched_dense_model, build_model
 
 MODEL_FILE = "model.safetensors"
@@ -52,7 +49,6 @@ LABELS_FILE = "labels.json"
 METADATA_FILE = "metadata.json"
 STAGE_A_BUNDLE_FILE = "stage_a_encoder.safetensors"
 STAGE_B_BUNDLE_FILE = "stage_b_expert_bank.safetensors"
-XGBOOST_BUNDLE_FILE = "xgboost_model.ubj"
 FORMAT_VERSION = 1
 
 
@@ -146,16 +142,7 @@ def export_bundle(
         "benign_label": "Benign",
         "raw_label_map": {name: config["data"]["label_mapping"][name] for name in data.active_datasets},
     }
-    if config["architecture"] == "pooled_xgboost":
-        model_config["xgboost"] = {
-            "chosen": (getattr(model, "xgboost_info", {}).get("chosen") or {}).get("chosen"),
-            "best_round": model.best_round(),
-            "trees": model.num_trees(),
-        }
-        with open(os.path.join(bundle_dir, XGBOOST_BUNDLE_FILE), "wb") as handle:
-            handle.write(model.model_bytes)
-    else:
-        save_file(_state_for_safetensors(model.state_dict()), os.path.join(bundle_dir, MODEL_FILE))
+    save_file(_state_for_safetensors(model.state_dict()), os.path.join(bundle_dir, MODEL_FILE))
     _write_json(model_config, os.path.join(bundle_dir, CONFIG_FILE))
     _write_json(preprocessing, os.path.join(bundle_dir, PREPROCESSING_FILE))
     _write_json(labels, os.path.join(bundle_dir, LABELS_FILE))
@@ -270,19 +257,13 @@ def load_bundle(path: str, device: str | torch.device = "cpu", *, verify: bool =
         raise ValueError("bundle preprocessing feature count does not match the model input")
     if labels["class_names"] != config["class_names"]:
         raise ValueError("bundle labels.json and config.json disagree on the class order")
+    if config["architecture"] not in ARCHITECTURES:
+        raise ValueError(f"bundle architecture {config['architecture']!r} is not supported; "
+                         f"expected one of {sorted(ARCHITECTURES)}")
     device = torch.device(device)
-    if config["architecture"] == "pooled_xgboost":
-        from ..training.xgboost_baseline import XGBoostModel
-
-        with open(os.path.join(path, XGBOOST_BUNDLE_FILE), "rb") as handle:
-            model = XGBoostModel(handle.read(), config["class_names"], preprocessing["feature_columns"],
-                                 device="cuda" if torch.device(device).type == "cuda" else "cpu")
-        assert_dataset_blind_signature(model)
-        device = torch.device("cpu")
-    else:
-        model = build_model_for_bundle(config)
-        assert_dataset_blind_signature(model)
-        state = load_file(os.path.join(path, MODEL_FILE))
-        model.load_state_dict(state, strict=True)
-        model.to(device).eval()
+    model = build_model_for_bundle(config)
+    assert_dataset_blind_signature(model)
+    state = load_file(os.path.join(path, MODEL_FILE))
+    model.load_state_dict(state, strict=True)
+    model.to(device).eval()
     return Bundle(path=path, model=model, config=config, preprocessing=preprocessing, labels=labels, metadata=metadata, device=device)

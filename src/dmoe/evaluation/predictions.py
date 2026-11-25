@@ -136,16 +136,13 @@ def _peak_memory_bytes(device: torch.device) -> int | None:
 
 
 def model_device(model) -> torch.device:
-    """Device of a torch model; CPU for parameter-free and tree models (B4)."""
+    """Device of a torch model; CPU for a model without parameters."""
     parameter = next(iter(model.parameters()), None)
     return parameter.device if parameter is not None else torch.device("cpu")
 
 
 def model_outputs(model, tensor: torch.Tensor) -> dict[str, torch.Tensor]:
     """Forward one batch and normalize the output to probabilities, gate and expert logits."""
-    if hasattr(model, "predict_proba"):  # B4 (XGBoost): no gate, no experts
-        probabilities = model.predict_proba(tensor.detach().cpu().numpy())
-        return {"probabilities": torch.from_numpy(np.ascontiguousarray(probabilities))}
     output = model(tensor)
     if "combined_probs" in output:
         probabilities = output["combined_probs"]

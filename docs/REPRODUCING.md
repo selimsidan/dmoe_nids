@@ -2,7 +2,7 @@
 
 ## The campaign
 
-`configs/campaign.yaml` defines the whole experiment: seven conditions, five
+`configs/campaign.yaml` defines the whole experiment: six conditions, five
 seeds, the split policy and which stages each condition reuses.
 
 | Condition | Trains | Reuses from M (same seed) | Hardware |
@@ -10,26 +10,22 @@ seeds, the split policy and which stages each condition reuses.
 | M | Stage A, B, C | | GPU |
 | B2 capacity-matched pooled MLP | Stage B, C (head only) | Stage A | GPU |
 | B3 hard-routing two-stage baseline | Stage C (router only) | Stage A, Stage B | GPU |
-| B4 pooled XGBoost | its tuning (once), then one booster per seed | nothing | GPU with 40 GB memory (e.g. A100) |
 | A1 no shared encoder (capacity matched) | Stage B, C (it has no encoder, so no Stage A) | nothing | GPU |
 | A2 no gating (uniform average) | nothing (Stage C is assembled, not trained) | Stage A, Stage B | GPU or CPU |
 | A3 private encoders | Stage B, C | Stage A (copied into every encoder) | GPU |
 
-One *unit* is one (condition, seed); B4 has one extra unit, its tuning, which
-runs once before B4's first seed (`runs/B4/tuning/`). Units run seed by seed
+One *unit* is one (condition, seed). Units run seed by seed
 and, within a seed, in the order above, so M of a seed always exists before
 the conditions that reuse it. Sharing M's Stage A gives B2, B3, A2 and A3 the
 same encoder starting point as M, so differences come from what each condition
 changes. A1 has no encoder at all (that is the difference it tests), so it has
-no Stage A and depends on nothing; B4 is not a neural network.
+no Stage A and depends on nothing.
 
 ```bash
 python scripts/run_campaign.py                              # plan: what is done, what is pending
 python scripts/run_campaign.py --execute                    # train everything pending
 python scripts/run_campaign.py --only M --seeds 3 4 --execute
 python scripts/run_campaign.py --only B2 B3 --execute --runs-per-session 1
-python scripts/run_campaign.py --only B4 --execute         # A100 (40 GB) GPU runtime
-python scripts/xgboost_pilot.py                            # B4 timing pilot; writes no results
 ```
 
 Without `--execute` nothing is trained. A unit whose parent is missing is
@@ -43,9 +39,7 @@ reported by name (for example `needs M seed 3 Stage B: run that first`).
 * A unit counts as complete when `runs/<condition>/seed<k>/manifest.json`
   says so and its recorded config hash equals the current one. Changing any
   setting that affects results makes the affected units pending again; paths
-  and logging settings do not. B4's tuning is complete when
-  `runs/B4/tuning/chosen.json` matches the current B4 settings; extra B4 seeds
-  reuse that choice.
+  and logging settings do not.
 * A run folder whose stage checkpoints come from a different configuration
   (for example a folder left from an earlier experiment under the same
   condition ID) is never reused: the run contract check stops with an error
@@ -53,6 +47,10 @@ reported by name (for example `needs M seed 3 Stage B: run that first`).
 * Aggregation uses whatever seeds are complete, prints n per condition, warns
   when conditions have different seed sets, and pairs conditions only on the
   seeds both have.
+* Aggregation, `scripts/sync_results.py` and `scripts/publish_hub.py` read
+  only the conditions listed in `configs/campaign.yaml` by default. Run
+  folders of conditions no longer in the campaign may stay in `OUTPUT_ROOT`;
+  they are ignored, not deleted.
 
 ## The fixed split
 
@@ -80,17 +78,7 @@ re-evaluation refuse them.
 
 Every run seeds Python, NumPy and PyTorch, uses deterministic cuDNN and
 `torch.use_deterministic_algorithms(True)`, and draws batch orders from NumPy
-generators seeded per stage and epoch. B4 uses XGBoost with seeded row
-and column subsampling; an uninterrupted B4 run on the same GPU model is
-expected to be reproducible, and a run resumed after a disconnect records its
-resume round (`resumed_after_rounds`), since subsampling restarts there. Its
-result can depend on the XGBoost version and the GPU, both recorded in the
-manifest.
-
-On macOS, torch and XGBoost ship separate OpenMP runtimes that crash when
-both run in one process; B4 units are therefore started through
-`dmoe.training.run_xgboost_unit`, which loads XGBoost first (see
-`dmoe.openmp`). Linux (Colab) is not affected.
+generators seeded per stage and epoch.
 
 **Guarantee:** the same code, data, seeds, library versions and GPU model give
 identical weights and metrics. A different GPU model, CUDA or cuDNN version can
@@ -112,14 +100,13 @@ every run manifest and bundle. Evaluation, aggregation (bootstrap seed
 the cross-seed summary and paper tables (`02_evaluate` with `MODE = "tables"`
 does the latter on its own).
 
-* B4 needs a GPU with about 40 GB of memory (an A100 runtime); the other six
-  conditions run on a T4. Either run `01_reproduce_all` on an A100 for
-  everything, or run `CONDITIONS = ['B4']` in a separate A100 session and the
-  other six in a T4 session at the same time; they write to different folders.
+* Every condition runs on a T4 GPU runtime. `CONDITIONS` selects any subset,
+  so separate sessions can train different conditions at the same time; they
+  write to different folders (start M first: the others reuse its stages).
 * Edit only the SETTINGS cell. `RUNS_PER_SESSION = 1` trains one unit per
   execution; `None` trains until done or disconnected. Rerunning the notebook
   resumes where it stopped (completed units are skipped, an interrupted unit
-  resumes from its last finished epoch, or for B4 its last checkpoint, saved every 200 rounds).
+  resumes from its last finished epoch).
 * Output streams in the notebook and into `runs/<condition>/seed<k>/log.txt`.
 
 **Colab secrets** (key icon in the left sidebar), all optional:
@@ -134,9 +121,8 @@ does the latter on its own).
 ## Compute
 
 TODO: wall time per unit for each condition on the hardware used for the
-paper, and the total for 7 conditions x 5 seeds. `eval/Resource_Accounting.csv`
-of each run records training and inference time; B4's tuning log
-(`runs/B4/tuning/Tuning_Log.csv`) records the time of each grid configuration.
+paper, and the total for 6 conditions x 5 seeds. `eval/Resource_Accounting.csv`
+of each run records training and inference time.
 
 ## After training
 

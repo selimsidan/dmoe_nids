@@ -126,7 +126,7 @@ def test_notebook_structure(name):
             compile(cell.source, name, "exec")
     if name == "01_reproduce_all":
         assert namespace["EXECUTE"] is False and namespace["RUNS_PER_SESSION"] is None
-        assert namespace["CONDITIONS"] == ["M", "B2", "B3", "B4", "A1", "A2", "A3"]
+        assert namespace["CONDITIONS"] == ["M", "B2", "B3", "A1", "A2", "A3"]
         assert namespace["SEEDS"] == [0, 1, 2, 3, 4]
 
 
@@ -191,10 +191,9 @@ def test_cli_plan_and_verify(trained):
 
     roots = ["--data-root", trained["data"], "--output-root", trained["output"], "--scratch-root", trained["scratch"]]
     sets = [arg for override in FAST_OVERRIDES for arg in ("--set", override)]
-    plan = _script("run_campaign.py", "--only", "M", "B2", "B4", "--seeds", "0", "1", *roots, *sets)
+    plan = _script("run_campaign.py", "--only", "M", "B2", "--seeds", "0", "1", *roots, *sets)
     assert plan.returncode == 0, plan.stderr
     assert "M seed 0: complete" in plan.stdout and "B2 seed 1: pending" in plan.stdout and "dry run" in plan.stdout
-    assert "B4 tuning: complete" in plan.stdout and "B4 seed 1: pending" in plan.stdout
     verify = _script("verify_data.py", "--no-hash", *roots)
     assert verify.returncode == 1 and "docs/DATA.md" in verify.stdout  # synthetic row counts differ
 

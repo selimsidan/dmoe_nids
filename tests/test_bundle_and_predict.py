@@ -16,7 +16,7 @@ def _bundle_dir(root, condition, seed=0):
     return os.path.join(root, "runs", condition, f"seed{seed}", "bundle")
 
 
-@pytest.mark.parametrize("condition", ["M", "B2", "B3", "B4", "A1", "A2", "A3"])
+@pytest.mark.parametrize("condition", ["M", "B2", "B3", "A1", "A2", "A3"])
 def test_bundle_reproduces_saved_test_predictions(trained, condition):
     bundle = load_bundle(_bundle_dir(trained["output"], condition))
     record = PredictionRecord.load(os.path.join(trained["output"], "runs", condition, "seed0", "eval", "test", "Test_Predictions.npz"))
@@ -89,16 +89,16 @@ def test_m_bundle_ships_stage_weights(trained):
     assert "stage_a_encoder.safetensors" not in os.listdir(_bundle_dir(trained["output"], "B3"))
 
 
-def test_b4_bundle_is_an_xgboost_model_on_the_47_features(trained):
-    from dmoe.training.xgboost_baseline import assert_dataset_blind_booster
+def test_bundle_with_unsupported_architecture_is_rejected(trained, tmp_path):
+    """Bundles of architectures this code no longer builds fail with a clear message."""
+    import shutil
 
-    path = _bundle_dir(trained["output"], "B4")
-    files = set(os.listdir(path))
-    assert "xgboost_model.ubj" in files and "model.safetensors" not in files
-    bundle = load_bundle(path)
-    assert bundle.model.booster.feature_names == bundle.feature_columns and len(bundle.feature_columns) == 47
-    with pytest.raises(AssertionError, match="dataset-blind"):
-        assert_dataset_blind_booster(bundle.model.booster, [*bundle.feature_columns, "dataset_id"])
-    frame = pd.read_csv(paths.dataset_csv_path("NF-ToN-IoT-v3", trained["data"]), nrows=20)
-    out = bundle.predict(frame, with_probs=True, with_gate=True)
-    assert len(out) == 20 and "top_expert" not in out
+    from dmoe.inference.bundle import CONFIG_FILE
+
+    target = tmp_path / "bundle"
+    shutil.copytree(_bundle_dir(trained["output"], "B2"), target)
+    config = json.load(open(target / CONFIG_FILE))
+    config["architecture"] = "retired_architecture"
+    json.dump(config, open(target / CONFIG_FILE, "w"))
+    with pytest.raises(ValueError, match="not supported"):
+        load_bundle(str(target), verify=False)

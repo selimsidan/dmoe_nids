@@ -7,16 +7,12 @@ Example:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 
+import pandas as pd
 
-def _is_tree_bundle(path: str) -> bool:
-    config = os.path.join(path, "config.json")
-    if not os.path.isfile(config):
-        return False
-    with open(config) as handle:
-        return json.load(handle).get("architecture") == "pooled_xgboost"
+from dmoe.evaluation.evaluate import evaluate
+from dmoe.inference.bundle import load_bundle
 
 
 def main() -> None:
@@ -30,15 +26,6 @@ def main() -> None:
     parser.add_argument("--chunk-rows", type=int, default=262_144)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
-    if _is_tree_bundle(args.bundle):
-        from dmoe.openmp import prepare_for_trees
-
-        prepare_for_trees()  # B4: load XGBoost before torch (see dmoe.openmp)
-    import pandas as pd
-
-    from dmoe.evaluation.evaluate import evaluate
-    from dmoe.inference.bundle import load_bundle
-
     bundle = load_bundle(args.bundle, args.device)
     first = True
     rows = 0

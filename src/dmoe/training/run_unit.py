@@ -75,11 +75,6 @@ def train_unit(config: dict, context) -> torch.nn.Module:
     stages = list(config["training"]["stages"])
     device = torch.device(config["training"]["device"])
 
-    if config["architecture"] == "pooled_xgboost":
-        from .xgboost_baseline import train_xgboost_unit
-
-        return train_xgboost_unit(config, context)
-
     if config["architecture"] == "matched_dense":
         if "A" in stages and not stage_complete(checkpoint_dir, "A"):
             run_stage_a_ooc(config, context)
@@ -125,7 +120,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--scratch-root")
     parser.add_argument("--force-restart", action="store_true")
     parser.add_argument("--skip-evaluation", action="store_true")
-    parser.add_argument("--tune", action="store_true", help="B4 only: run its one-time tuning, not a seed")
     args = parser.parse_args(argv)
     roots = paths.apply_cli_roots(args.data_root, args.output_root, args.scratch_root)
     campaign = load_campaign(args.campaign)
@@ -136,13 +130,11 @@ def main(argv: list[str] | None = None) -> None:
     configure_reproducibility(config["seed"], deterministic=bool(config["training"].get("deterministic", True)))
     _resolve_device(config)
     checkpoint_dir = config["training"]["checkpoint_dir"]
-    if not args.tune:
-        os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     started = time.monotonic()
     info = environment_info()
     print("=" * 80, flush=True)
-    what = "tuning" if args.tune else f"seed {args.seed}"
-    print(f"[run] {args.condition} {what} started {time.strftime('%Y-%m-%d %H:%M:%S %z')}", flush=True)
+    print(f"[run] {args.condition} seed {args.seed} started {time.strftime('%Y-%m-%d %H:%M:%S %z')}", flush=True)
     print(f"[run] architecture={config['architecture']} stages={config['training']['stages']} "
           f"split_mode={config['data']['split_mode']} split_seed={config['data']['split_seed']}", flush=True)
     print(f"[run] device={config['training']['device']} gpu={info.get('gpu')} torch={info.get('torch')}", flush=True)
@@ -150,21 +142,9 @@ def main(argv: list[str] | None = None) -> None:
         os.makedirs(path, exist_ok=True)
         usage = shutil.disk_usage(path)
         print(f"[run] {label} free={usage.free / 2**30:.1f}GiB", flush=True)
-    if args.force_restart and not args.tune:
+    if args.force_restart:
         _restart(checkpoint_dir)
 
-    if config["architecture"] == "pooled_xgboost":
-        # B4 uses torch only to move arrays (see dmoe.openmp; the campaign starts B4 units
-        # through dmoe.training.run_xgboost_unit, which also loads XGBoost first).
-        torch.set_num_threads(1)
-    if args.tune:
-        from .xgboost_baseline import run_tuning
-
-        if config["architecture"] != "pooled_xgboost":
-            raise ValueError(f"--tune applies to pooled_xgboost conditions, not {config['architecture']}")
-        run_tuning(config, prepare_out_of_core_data(config), args.condition, roots["output"].path)
-        print(f"[run] {args.condition} tuning complete in {(time.monotonic() - started) / 60:.1f} min", flush=True)
-        return
     context = prepare_out_of_core_data(config)
     contract = ensure_run_contract(config, context)
     print(f"[run] contract={contract['signature']} split_signatures={context.split_signatures}", flush=True)

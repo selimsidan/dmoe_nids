@@ -69,10 +69,4 @@ def environment_info() -> dict:
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "cpu_count": os.cpu_count(),
     }
-    try:
-        import xgboost
-
-        info["xgboost"] = xgboost.__version__
-    except ImportError:
-        info["xgboost"] = None
     return info

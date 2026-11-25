@@ -23,7 +23,6 @@ log.txt                streamed training output
 Training_History.csv   per-epoch training record of all stages (shared stages included)
 figures/               Stage_{A,B,C}_Learning_Curves.png
 checkpoints/           run_contract.json, stage_A/, stage_B/, stage_C/ (not committed)
-                       B4: xgboost/ (checkpoint and progress) and stage_C/xgboost_model.ubj
 bundle/                the exported model (not committed; see MODEL_CARD.md)
 eval/Resource_Accounting.csv
 eval/selection/        validation reports written during Stage C selection
@@ -79,7 +78,7 @@ auc_method` (`origin_datasets`: the datasets where the class occurs, `|`-separat
   without AUCs.
 * For A2 only `Gate_By_Dataset.csv` and `Expert_Performance_By_Dataset.csv`
   are written (no utilization or route tables, no reliability matrix).
-  B2 and B4 have no routing files.
+  B2 has no routing files.
 * `Class_Conditional_Reliability.csv` (M, A1, A3): `expert, class,
   reliability_logit, reliability_only_expert_preference` (softmax of R over
   experts for that class).
@@ -110,25 +109,6 @@ inference cost (`test_inference_wall_seconds`, `test_inference_rows_per_second`,
 A1 has no encoder: `encoder_parameters` is 0 and its Stage-A columns are empty
 (it has no Stage A); its Training_History.csv holds Stage B and C only.
 
-For B4 the parameter and MAC columns read `n/a`; instead it reports
-`xgboost_trees` (one per class and round), `xgboost_total_leaves`,
-`xgboost_best_round`, `xgboost_rounds_trained`, `xgboost_model_bytes`,
-`xgboost_chosen` (the tuned configuration), `xgboost_train_rows`,
-`xgboost_device` and `xgboost_resumed_after_rounds`; its `C_*`
-training columns describe the boosting run (`C_epochs_completed` = rounds
-trained, `C_selected_epoch` = best round). The manifest has
-`total_parameters: null` and a `model_size` block with the tree counts.
-
-### B4 tuning: `runs/B4/tuning/`
-`pilot.json` (the timing pilot: device, seconds per round, one validation
-check, rows, GPU memory in use, worst-case projected hours), `Tuning_Log.csv`
-(`config_id, learning_rate, max_leaves, seed, train_rows, device, best_round,
-val_macro_f1, rounds_trained, stopped_early, wall_seconds`), `chosen.json`
-(chosen configuration, its validation macro-F1 and best round, `train_rows`,
-`seed_max_rounds`, `cap_extended`, the rule) and one folder per configuration
-with `progress.json`, `model_progress.ubj` and `Validation_Checks.csv`
-(`round, val_macro_f1, val_multi_logloss`).
-
 ### `eval/Bias_Tuning.json` (supplementary)
 Per-class offsets fitted on validation for macro-F1 and applied to test
 (`scripts/bias_tuning.py`; see METHOD.md): `settings`, `class_names`,
@@ -137,9 +117,6 @@ Per-class offsets fitted on validation for macro-F1 and applied to test
 weighted_f1) and `test_per_dataset` (the same per origin dataset).
 
 ### `Training_History.csv`
-(B4: one Stage C row per validation check, `encoder_role` xgboost, `epoch` =
-boosting round.)
-
 `seed, stage, encoder_role, dataset, epoch, objective, learning_rate, rows,
 optimizer_steps, examples_seen, epoch_seconds, train_total_loss,
 train_ce_loss, train_representation_loss, train_weighted_representation_loss,
@@ -155,12 +132,15 @@ and recall, accuracy, support) and, for dataset-expert conditions,
 
 ## Across seeds: `summary/`
 
+Built from the conditions listed in `configs/campaign.yaml` (`scripts/aggregate.py
+--only` selects others); run folders of other conditions are ignored. Readers
+ignore manifest fields they do not use, so manifests written by earlier
+versions of the code remain readable.
+
 * `Summary_Overall.csv`, `Summary_Per_Dataset.csv` (`origin`),
-  `Summary_Per_Class.csv` (`class`): `condition, [total_parameters,
-  model_size_note | origin | class], metric, mean, sd, min, max, n, seeds,
-  ci95_low, ci95_high` (SD with ddof 1; t-based 95% interval of the mean;
-  `model_size_note` names B4's mean trees and leaves, its `total_parameters`
-  is empty).
+  `Summary_Per_Class.csv` (`class`): `condition, [total_parameters | origin
+  | class], metric, mean, sd, min, max, n, seeds, ci95_low, ci95_high` (SD
+  with ddof 1; t-based 95% interval of the mean).
 * `Paired_vs_M.csv`: `reference, condition, origin, metric, difference_mean,
   difference_sd, difference_min, difference_max, difference_ci95_low,
   difference_ci95_high, n_common_seeds, common_seeds, seeds_favoring_reference`
@@ -187,10 +167,11 @@ and recall, accuracy, support) and, for dataset-expert conditions,
 
 ## Paper exhibits: `paper/`
 
-`Table_Main` (M against B2, B3, B4), `Table_Ablations` (M against A1, A2, A3,
+`Table_Main` (M against B2 and B3), `Table_Ablations` (M against A1, A2, A3,
 with the paired difference from M), `Table_Per_Dataset`, `Table_Per_Class`
 (`.tex` and `.csv` with unrounded numbers), `Figure_Routing_<condition>` and
-`Figure_Confusion_<condition>` (`.pdf`, `.png`).
+`Figure_Confusion_<condition>` (`.pdf`, `.png`). Only the conditions M, B2,
+B3, A1, A2 and A3 are read.
 
 ## Data cache: `cache/` (not committed)
 

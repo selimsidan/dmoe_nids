@@ -18,7 +18,6 @@ dependencies = [
   "PyYAML",
   "matplotlib",
   "safetensors",
-  "xgboost",
 ]
 
 [project.optional-dependencies]

@@ -14,7 +14,7 @@ every number, table and figure of the paper (TODO: paper reference).
 | | |
 |---|---|
 | Method | dataset-expert MoE (condition **M**) |
-| Baselines | **B2** capacity-matched pooled MLP, **B3** hard-routing two-stage baseline, **B4** pooled XGBoost |
+| Baselines | **B2** capacity-matched pooled MLP, **B3** hard-routing two-stage baseline |
 | Ablations | **A1** no shared encoder (capacity matched), **A2** no gating (uniform expert average), **A3** private encoders |
 | Seeds | 5 per condition (0 to 4), one fixed train/validation/test split |
 | Headline metric | test macro-F1 (selection always on validation macro-F1) |
@@ -65,12 +65,11 @@ the CSV's `Attack` column to the 22 classes so the predictions can be scored.
    with a GPU:
    ```bash
    python scripts/run_campaign.py              # prints the plan
-   python scripts/run_campaign.py --execute    # trains all 7 conditions x 5 seeds
+   python scripts/run_campaign.py --execute    # trains all 6 conditions x 5 seeds
    ```
    M is trained first for each seed; B2, B3, A2 and A3 reuse its Stage A (B3
    and A2 also its Stage B). A1 has no encoder (no Stage A) and trains its own
-   Stage B and C, independent of M. B4 (XGBoost on all rows, A100 GPU) tunes
-   once and then trains each seed. Interrupted runs resume.
+   Stage B and C, independent of M. Interrupted runs resume.
 3. **Aggregate and build the tables.**
    ```bash
    python scripts/aggregate.py
@@ -93,14 +92,14 @@ condition does is in [docs/METHOD.md](docs/METHOD.md).
 
 | Notebook | Purpose | GPU |
 |---|---|---|
-| [01_reproduce_all](notebooks/01_reproduce_all.ipynb) | train all 7 conditions for any seed list, then the paper tables | yes; an A100 for B4 |
+| [01_reproduce_all](notebooks/01_reproduce_all.ipynb) | train all 6 conditions for any seed list, then the paper tables | yes (a T4 is enough) |
 | [02_evaluate](notebooks/02_evaluate.ipynb) | re-evaluate runs; aggregate seeds; paper tables | no |
 | [03_predict](notebooks/03_predict.ipynb) | predict any NF-v3 CSV with a bundle | no |
 
 Open a notebook in Colab (TODO: Colab badges once the repository is final),
 edit only its SETTINGS cell and choose *Run all*. Rerunning `01_reproduce_all`
 after a disconnect continues where it stopped; `CONDITIONS` and `SEEDS` select
-any subset (for example `CONDITIONS = ['B4']` in a separate A100 session). By default data is read from
+any subset (for example `CONDITIONS = ['M']`). By default data is read from
 `MyDrive/NIDS_datasets` and everything is written to `MyDrive/NIDS_outputs`;
 other folders can be typed in the SETTINGS cell or stored as the Colab secrets
 `NIDS_DATA_DIR` and `NIDS_OUTPUT_DIR`.
@@ -110,7 +109,7 @@ other folders can be typed in the SETTINGS cell or stored as the Colab secrets
 ```
 configs/      base.yaml (shared settings), campaign.yaml (conditions, seeds, split, dependencies),
               method/ baselines/ ablations/ (one file per condition), sources.yaml, checksums.json
-src/dmoe/     data/ (registry, split building, verification), models/, training/ (stages, campaign, XGBoost),
+src/dmoe/     data/ (registry, split building, verification), models/, training/ (stages, campaign),
               evaluation/ (metrics, figures, aggregation, paper tables), inference/ (bundles), colab.py
 scripts/      command-line entry points (thin wrappers around src/dmoe)
 notebooks/    Colab notebooks 01 to 03

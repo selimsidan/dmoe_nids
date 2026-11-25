@@ -56,7 +56,7 @@ highest mixed probability is predicted.
 
 ## Baselines
 
-B2 and B3 start from M's Stage-A encoder of the same seed; B4 uses nothing from M.
+B2 and B3 start from M's Stage-A encoder of the same seed.
 
 * **B2 capacity-matched pooled MLP (22,419).** One classifier: M's frozen
   encoder plus a head 64-61-48-22. The two widths are chosen by a deterministic
@@ -68,54 +68,14 @@ B2 and B3 start from M's Stage-A encoder of the same seed; B4 uses nothing from 
   dataset of origin (dataset-ID cross-entropy, no task-loss gradient, no load
   balancing). At prediction every row goes to exactly one expert, the router's
   argmax.
-* **B4 pooled XGBoost (trees; no parameter count).** One gradient-boosted
-  tree model (XGBoost, multiclass, trained on a GPU) on all pooled training
-  rows, dataset-blind. Its size is reported as trees and leaves next to its
-  results.
-
-### B4 fairness contract
-
-B4 gets nothing M does not get. Anything not listed is not used.
-
-| Aspect | M | B4 |
-|---|---|---|
-| Training rows | all pooled training rows, natural class distribution | the same rows |
-| Inputs | the 47 prepared features (median imputed, standardized), no dataset ID | the same prepared feature arrays, no dataset ID |
-| Class weighting | square-root inverse frequency, normalized to mean 1, on the pooled training rows | the same weights from the same function, as per-row sample weights |
-| Resampling | none | none |
-| Loss | class-weighted cross-entropy (plus M's auxiliary terms) | class-weighted multiclass cross-entropy (softmax) |
-| Model selection | best validation macro-F1 epoch (Stage C, patience 5 of at most 30 epochs) | best validation macro-F1 boosting round (checked every 10 rounds, patience 200 rounds, at most 2,000 rounds) |
-| Regularization | dropout 0.2 | row and column subsampling 0.8, L2 penalty 1 on leaf values, minimum child weight 1 (fixed, not tuned) |
-| Tuning on validation | settled in development (see below) | a grid of 4 configurations, once |
-| Prediction | argmax of class probabilities | argmax of class probabilities |
-| Hardware | one GPU | one GPU |
-
-Not allowed for B4: dataset ID or anything derived from it, feature
-engineering, oversampling or undersampling, `scale_pos_weight` or any class
-weighting beyond the sample weights above, focal or custom losses, other
-boosters (DART, linear), per-class thresholds, probability calibration. The
-code sets the objective (`multi:softprob`) itself and rejects the
-corresponding XGBoost settings.
-
-Fixed XGBoost settings: `tree_method: hist` on the GPU, `max_bin` 256,
-`grow_policy: lossguide` with `max_depth: 0` (leaf-wise growth limited by
-`max_leaves`), `reg_lambda` 1, `min_child_weight` 1, `subsample` 0.8,
-`colsample_bytree` 0.8; the seed is derived from the campaign seed (this is
-what makes B4's seeds differ). Everything else is at XGBoost's defaults.
-
-The L2 penalty on leaf values matters on these data: without it (a penalty of
-0, LightGBM's default), leaves whose rows are already confidently classified
-have near-zero hessians and output very large values, and multiclass training
-diverges within a few tens of rounds. XGBoost's default of 1 is kept. The patience of 200 rounds (10% of the 2,000-round cap)
-leaves room for the noise of validation macro-F1 between checks.
 
 ### How each condition targets macro-F1
 
 No condition optimizes macro-F1 directly (it is not differentiable). Every
-condition, M and B4 included, minimizes a class-weighted cross-entropy with
-the same square-root inverse-frequency weights, and macro-F1 enters only
-through those weights and through selection on validation macro-F1 (M's
-Stage-C epoch, B4's boosting round and B4's tuning grid). No condition uses
+condition minimizes a class-weighted cross-entropy with the same square-root
+inverse-frequency weights, and macro-F1 enters only through those weights and
+through selection on validation macro-F1 (the Stage-C epoch, for every
+condition that trains a Stage C). No condition uses
 per-class thresholds or post-hoc calibration in the main results.
 
 Supplementary analysis, applied identically to every condition and seed
@@ -127,26 +87,6 @@ classes with at most 200,000 validation rows and 200,000 rows of larger
 classes, each weighted by n_c / k_c so the weighted confusion matrix estimates
 the full validation one. It is reported separately from the main results
 (`summary/Bias_Tuning_*.csv`); test data is never used for fitting.
-
-Tuning protocol (pre-registered in `configs/baselines/B4_pooled_xgboost.yaml`):
-
-* Grid: `max_leaves` in {63, 255} x `learning_rate` in {0.05, 0.1}, trained
-  once with seed 0 on the fixed split. The configuration with the highest
-  validation macro-F1 is used unchanged for every seed (ties go to the earlier
-  configuration). Test data is never read during tuning.
-* Before the grid, a timing pilot (20 rounds of the largest configuration on
-  all training rows) records seconds per round, GPU memory and the
-  worst-case projected time in `runs/B4/tuning/pilot.json`; it does not
-  change any setting.
-* If the chosen configuration's best round lies within the last 200 rounds of
-  the 2,000-round cap, the seed runs use a 4,000-round cap instead, so training
-  length never limits B4.
-* Every B4 run trains in one pass and saves a checkpoint every 200 rounds.
-  A run interrupted by a disconnect resumes from its last checkpoint; the
-  resume round is recorded (`resumed_after_rounds` in the run's
-  `progress.json` and in `Resource_Accounting.csv`), because row and column
-  subsampling restarts there, so a resumed run is not bit-identical to an
-  uninterrupted one.
 
 ## Ablations
 
@@ -189,7 +129,6 @@ Expected readings, written before the final runs: TODO (author).
 * A1: TODO
 * A2: TODO
 * A3: TODO
-* B4: TODO
 
 ## Choices made on validation data in development
 
@@ -209,5 +148,3 @@ TODO (author): one sentence on the grid that was compared.
 * Across seeds: mean, SD and a t-based 95% interval; paired differences from
   M on common seeds; per seed, a paired bootstrap of the macro-F1 difference
   (1,000 resamples of test rows) and McNemar's test on per-row correctness.
-* B4 is evaluated by exactly the same code: its probabilities go into the same
-  per-row prediction files, tables, aggregation and significance tests.

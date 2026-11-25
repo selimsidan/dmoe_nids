@@ -43,25 +43,3 @@ def test_dependent_conditions_reuse_m_weights(trained):
     assert not any(key.startswith("encoder.") for key in a1)  # identity encoder: no weights
     assert a1["expert_bank.experts.0.net.0.weight"].shape == (73, 47)  # its own 47-73-22 experts
     assert m_bank["experts.0.net.0.weight"].shape == (m_bank["experts.0.net.0.weight"].shape[0], 64)
-
-
-def test_b4_same_seed_identical_different_seed_differs(trained, tmp_path, monkeypatch):
-    """B4 seed 0 retrained from scratch (not reused from tuning) is identical; seed 1 differs."""
-    import shutil
-
-    roots = set_roots(monkeypatch, str(tmp_path))
-    roots["data"] = trained["data"]
-    tuning = os.path.join(roots["output"], "runs", "B4", "tuning")
-    shutil.copytree(os.path.join(trained["output"], "runs", "B4", "tuning"), tuning)
-    chosen = json.load(open(os.path.join(tuning, "chosen.json")))
-    shutil.rmtree(os.path.join(tuning, chosen["config_id"]))  # force a fresh training run
-    train_unit("B4", 0, roots)
-    train_unit("B4", 1, roots)
-
-    def model_text(root, seed):
-        path = os.path.join(root, "runs", "B4", f"seed{seed}", "checkpoints", "stage_C", "xgboost_model.ubj")
-        return open(path, "rb").read()
-
-    assert model_text(trained["output"], 0) == model_text(roots["output"], 0)
-    assert model_text(roots["output"], 0) != model_text(roots["output"], 1)
-    assert _test_f1(trained["output"], "B4", 0) == _test_f1(roots["output"], "B4", 0)

@@ -7,13 +7,15 @@ column is bolded; weighted-F1 is never bolded.
 
 Files (each table as ``.tex`` and ``.csv``, each figure as ``.pdf`` and ``.png``):
 
-* ``Table_Main``: M against the baselines B2 to B4, overall and per-dataset macro-F1, parameters
-  (B4 is a tree model: its cell reads n/a with its trees and leaves).
+* ``Table_Main``: M against the baselines B2 and B3, overall and per-dataset macro-F1, parameters.
 * ``Table_Ablations``: M against A1 to A3 with the paired difference from M.
 * ``Table_Per_Dataset``: every condition and dataset: macro-F1, balanced accuracy, MCC, weighted-F1.
 * ``Table_Per_Class``: per-class F1 of M and the baselines.
 * ``Figure_Routing_<condition>``: mean gate weight by origin dataset, averaged over seeds.
 * ``Figure_Confusion_<condition>``: test confusion matrix summed over seeds.
+
+Only the conditions in ``ALL_CONDITIONS`` are read; summary rows, run folders
+and confusion matrices of any other condition are ignored.
 """
 from __future__ import annotations
 
@@ -27,9 +29,9 @@ import pandas as pd
 from .. import paths
 from .figures import heatmap_figure, save_figure
 
-MAIN_CONDITIONS = ["M", "B2", "B3", "B4"]
+MAIN_CONDITIONS = ["M", "B2", "B3"]
 ABLATION_CONDITIONS = ["M", "A1", "A2", "A3"]
-ALL_CONDITIONS = ["M", "B2", "B3", "B4", "A1", "A2", "A3"]
+ALL_CONDITIONS = ["M", "B2", "B3", "A1", "A2", "A3"]
 
 
 def _read(summary_dir: str, name: str) -> pd.DataFrame:
@@ -124,17 +126,9 @@ class Summary:
         row = self.overall[self.overall["condition"] == condition]
         return int(row["total_parameters"].iloc[0]) if not row.empty and pd.notna(row["total_parameters"].iloc[0]) else None
 
-    def size_note(self, condition: str) -> str | None:
-        row = self.overall[self.overall["condition"] == condition]
-        if row.empty or "model_size_note" not in row or pd.isna(row["model_size_note"].iloc[0]):
-            return None
-        return str(row["model_size_note"].iloc[0])
-
     def params_cell(self, condition: str) -> str:
         params = self.params(condition)
-        if params:
-            return f"{params:,}"
-        return self.size_note(condition) or "--"
+        return f"{params:,}" if params else "--"
 
     def datasets(self) -> list[str]:
         return list(dict.fromkeys(self.per_dataset["origin"]))
@@ -162,8 +156,7 @@ def main_table(summary: Summary, out_dir: str, conditions: list[str], stem: str,
         ns.add(n)
         row = {"Condition": summary.display.get(condition, condition), "Params": summary.params_cell(condition),
                "n": str(n), "Macro-F1": _cell(mean, sd)}
-        num = {"condition": condition, "params": summary.params(condition), "model_size_note": summary.size_note(condition),
-               "n": n, "macro_f1_mean": mean, "macro_f1_sd": sd}
+        num = {"condition": condition, "params": summary.params(condition), "n": n, "macro_f1_mean": mean, "macro_f1_sd": sd}
         means["Macro-F1"].append(mean)
         for dataset, label in zip(datasets, columns[4:]):
             m, s, _ = summary.stat(condition, "macro_f1", dataset)
@@ -255,7 +248,7 @@ def per_class_table(summary: Summary, out_dir: str) -> None:
 def routing_figures(output_root: str, out_dir: str, display: dict[str, str], dataset_display: dict[str, str]) -> None:
     from .aggregate import collect_runs
 
-    runs = collect_runs(output_root)
+    runs = collect_runs(output_root, ALL_CONDITIONS)
     for condition in sorted({r.condition for r in runs}):
         frames = [
             pd.read_csv(os.path.join(r.run_dir, "eval", "test", "Gate_By_Dataset.csv"))
@@ -280,7 +273,7 @@ def confusion_figures(summary_dir: str, out_dir: str) -> None:
     base = os.path.join(summary_dir, "confusion")
     if not os.path.isdir(base):
         return
-    for condition in sorted(os.listdir(base)):
+    for condition in sorted(set(os.listdir(base)) & set(ALL_CONDITIONS)):
         for extension in ("pdf", "png"):
             source = os.path.join(base, condition, f"Confusion_Matrix_{condition}_summed.{extension}")
             if os.path.isfile(source):
@@ -298,7 +291,7 @@ def make_paper_tables(output_root: str | None = None, dataset_display: dict[str,
 
         dataset_display = load_yaml(BASE_CONFIG).get("data", {}).get("display_names", {})
     main_table(summary, out_dir, MAIN_CONDITIONS, "Table_Main",
-               "Dataset-expert MoE against the baselines. B4 is a tree model without a parameter count.",
+               "Dataset-expert MoE against the baselines.",
                dataset_display)
     ablation_table(summary, out_dir)
     per_dataset_table(summary, out_dir, dataset_display)

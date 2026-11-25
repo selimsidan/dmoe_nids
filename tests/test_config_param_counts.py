@@ -7,7 +7,7 @@ from dmoe.training.campaign import load_campaign
 from dmoe.training.config import load_config
 
 CLASSES = ["Benign", *[f"class_{i}" for i in range(21)]]
-EXPECTED = {"M": 22420, "B2": 22419, "B3": 22332, "A1": 22284, "A2": 20120, "A3": 80020}  # B4: trees, no count
+EXPECTED = {"M": 22420, "B2": 22419, "B3": 22332, "A1": 22284, "A2": 20120, "A3": 80020}
 
 
 def _model(condition):
@@ -32,15 +32,9 @@ def test_b2_head_widths():
     assert abs(model.match_info["relative_error"]) < 0.005
 
 
-def test_b4_has_no_parameter_count():
-    config = load_config(load_campaign().entry("B4").config_path)
-    assert config["architecture"] == "pooled_xgboost"
-    assert config["condition"]["expected_total_parameters"] is None
-
-
 def test_campaign_lists_all_conditions_in_dependency_order():
     campaign = load_campaign()
-    assert campaign.condition_ids == ["M", "B2", "B3", "B4", "A1", "A2", "A3"]
+    assert campaign.condition_ids == ["M", "B2", "B3", "A1", "A2", "A3"]
     assert campaign.seeds == [0, 1, 2, 3, 4]
     assert campaign.split_mode == "fixed" and campaign.split_seed == 0
 

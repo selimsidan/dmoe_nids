@@ -4,7 +4,6 @@ Examples:
   python scripts/run_campaign.py                         # plan for all conditions and seeds
   python scripts/run_campaign.py --only M --seeds 0 1 --execute
   python scripts/run_campaign.py --only B2 B3 --execute --runs-per-session 2
-  python scripts/run_campaign.py --only B4 --execute     # CPU, high RAM: tunes once, then the seeds
 """
 from __future__ import annotations
 

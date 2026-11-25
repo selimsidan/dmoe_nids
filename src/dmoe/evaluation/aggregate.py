@@ -1,7 +1,9 @@
 """Cross-seed aggregation of completed runs into ``OUTPUT_ROOT/summary/``.
 
 Reads every ``runs/<condition>/seed<k>/manifest.json`` with status
-``complete`` and writes:
+``complete`` for the selected conditions (by default the conditions of the
+active campaign, so run folders of retired conditions kept in OUTPUT_ROOT are
+ignored, not deleted) and writes:
 
 * ``Summary_Overall.csv`` / ``Summary_Per_Dataset.csv`` / ``Summary_Per_Class.csv``:
   per condition (and dataset or class) and metric: mean, SD (ddof 1), min,
@@ -45,20 +47,6 @@ SUMMARY_METRICS = [
 PER_CLASS_METRICS = ["f1", "precision", "recall", "roc_auc_ovr", "pr_auc_ovr"]
 
 
-def _size_notes(runs) -> dict[str, str]:
-    """For models without a parameter count (B4 trees): mean trees and leaves over seeds."""
-    sizes: dict[str, list[dict]] = {}
-    for run in runs:
-        size = run.manifest.get("model_size") or {}
-        if size.get("xgboost_trees") is not None:
-            sizes.setdefault(run.condition, []).append(size)
-    return {
-        condition: (f"n/a ({np.mean([v['xgboost_trees'] for v in values]):,.0f} trees, "
-                    f"{np.mean([v['xgboost_total_leaves'] for v in values]):,.0f} leaves; mean of {len(values)} seeds)")
-        for condition, values in sizes.items()
-    }
-
-
 @dataclass
 class RunInfo:
     condition: str
@@ -81,7 +69,15 @@ class RunInfo:
         return os.path.join(self.run_dir, "eval", split, PREDICTION_FILES[split])
 
 
+def active_conditions() -> list[str]:
+    """Condition IDs of the campaign in ``configs/campaign.yaml``."""
+    from ..training.campaign import load_campaign
+
+    return load_campaign().condition_ids
+
+
 def collect_runs(output_root: str, conditions: list[str] | None = None, seeds: list[int] | None = None) -> list[RunInfo]:
+    """Completed runs under ``runs/``; every condition folder found when ``conditions`` is None."""
     base = os.path.join(output_root, "runs")
     runs = []
     if not os.path.isdir(base):
@@ -355,7 +351,7 @@ def aggregate(
 ) -> dict[str, pd.DataFrame]:
     root = output_root or paths.output_root()
     out = paths.summary_dir(root)
-    runs = collect_runs(root, conditions, seeds)
+    runs = collect_runs(root, conditions or active_conditions(), seeds)
     if not runs:
         raise FileNotFoundError(f"no completed runs under {os.path.join(root, 'runs')}")
     split_key = check_single_split(runs)
@@ -382,7 +378,6 @@ def aggregate(
     tables["Recommended_Seeds"] = recommended_seeds(runs)
     params = {r.condition: r.manifest.get("total_parameters") for r in runs}
     tables["Summary_Overall"].insert(1, "total_parameters", tables["Summary_Overall"]["condition"].map(params))
-    tables["Summary_Overall"].insert(2, "model_size_note", tables["Summary_Overall"]["condition"].map(_size_notes(runs)))
     for name, frame in tables.items():
         _atomic_csv(frame, os.path.join(out, f"{name}.csv"))
     display = {r.condition: r.manifest.get("display_name") or r.condition for r in runs}

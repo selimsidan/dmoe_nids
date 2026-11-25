@@ -25,7 +25,7 @@ def test_n_and_mixed_seed_warning(summary):
     overall = tables["Summary_Overall"].query("metric == 'macro_f1'").set_index("condition")
     assert overall.loc["M", "n"] == 2 and overall.loc["M", "seeds"] == "0 1"
     assert overall.loc["B2", "n"] == 1 and np.isnan(overall.loc["B2", "sd"])
-    assert np.isnan(overall.loc["B4", "total_parameters"]) and "trees" in overall.loc["B4", "model_size_note"]
+    assert (overall["total_parameters"] > 0).all() and "model_size_note" not in overall
     info = json.load(open(os.path.join(root, "summary", "Summary_Info.json")))
     assert any("different completed seed sets" in w for w in info["warnings"])
 
@@ -33,7 +33,7 @@ def test_n_and_mixed_seed_warning(summary):
 def test_pairs_only_common_seeds(summary):
     _, tables = summary
     paired = tables["Paired_vs_M"].query("metric == 'macro_f1' and origin == 'ALL'").set_index("condition")
-    assert set(paired.index) == {"B2", "B3", "B4", "A1", "A2", "A3"}
+    assert set(paired.index) == {"B2", "B3", "A1", "A2", "A3"}
     assert (paired["n_common_seeds"] == 1).all() and (paired["common_seeds"] == "0").all()
     per_seed = tables["Paired_vs_M_Per_Seed"]
     assert set(per_seed["seed"]) == {0}
@@ -115,7 +115,56 @@ def test_paper_tables(summary):
     summary_value = pd.read_csv(os.path.join(root, "summary", "Summary_Overall.csv")) \
         .query("condition == 'M' and metric == 'macro_f1'")["mean"].iloc[0]
     assert numbers.set_index("condition").loc["M", "macro_f1_mean"] == pytest.approx(summary_value)
-    assert list(numbers["condition"]) == ["M", "B2", "B3", "B4"]
-    assert "trees" in main  # B4 has no parameter count; its cell names trees and leaves
+    assert list(numbers["condition"]) == ["M", "B2", "B3"]
+    assert numbers["params"].notna().all() and "model_size_note" not in numbers
     ablations = pd.read_csv(os.path.join(out, "Table_Ablations.csv"))
     assert list(ablations["condition"]) == ["M", "A1", "A2", "A3"]
+
+
+def _add_retired_condition(root) -> None:
+    """A complete run folder, summary folder and paper figure of a condition no longer in the campaign."""
+    runs = os.path.join(root, "runs")
+    shutil.copytree(os.path.join(runs, "B2", "seed0"), os.path.join(runs, "RETIRED", "seed0"))
+    path = os.path.join(runs, "RETIRED", "seed0", "manifest.json")
+    manifest = json.load(open(path))
+    manifest.update(condition="RETIRED", total_parameters=None, model_size={"trees": 10})
+    json.dump(manifest, open(path, "w"))
+    for folder in ("confusion", "training"):
+        os.makedirs(os.path.join(root, "summary", folder, "RETIRED"), exist_ok=True)
+        open(os.path.join(root, "summary", folder, "RETIRED", "old.csv"), "w").write("a\n1\n")
+    os.makedirs(os.path.join(root, "paper"), exist_ok=True)
+    open(os.path.join(root, "paper", "Figure_Confusion_RETIRED.png"), "wb").write(b"png")
+
+
+def test_retired_condition_folders_are_ignored_not_deleted(trained, tmp_path):
+    """Run folders of conditions outside the campaign stay on disk but reach no default output."""
+    from dmoe.release import publish_hub, sync_results
+
+    root = str(tmp_path / "out")
+    shutil.copytree(os.path.join(trained["output"], "runs"), os.path.join(root, "runs"))
+    # Older neural manifests may carry fields that are no longer written; readers ignore them.
+    path = os.path.join(root, "runs", "M", "seed0", "manifest.json")
+    manifest = json.load(open(path))
+    manifest.update(model_size=None, environment={**manifest["environment"], "retired_library": "1.0"})
+    json.dump(manifest, open(path, "w"))
+    _add_retired_condition(root)
+    assert {r.condition for r in collect_runs(root)} >= {"RETIRED"}  # explicit listing still sees it
+
+    tables = aggregate(root, resamples=10, figures=True)
+    for name, frame in tables.items():
+        if "condition" in frame:
+            assert "RETIRED" not in set(frame["condition"]), name
+    assert "RETIRED" not in json.load(open(os.path.join(root, "summary", "Summary_Info.json")))["seeds_by_condition"]
+    out = make_paper_tables(root)
+    for name in os.listdir(out):
+        if name.endswith(".csv"):
+            assert "RETIRED" not in open(os.path.join(out, name)).read(), name
+    assert not os.path.exists(os.path.join(out, "Figure_Routing_RETIRED.pdf"))
+
+    repo = tmp_path / "repo"
+    written = sync_results(root, str(repo))
+    assert written and not any("RETIRED" in p for p in written)
+    assert os.path.isfile(repo / "results" / "runs" / "M" / "seed0" / "manifest.json")
+    assert not any("RETIRED" in p for p in publish_hub(root, repo_id="example/repo"))
+    assert os.path.isfile(os.path.join(root, "runs", "RETIRED", "seed0", "manifest.json"))  # never deleted
+    assert os.path.isfile(os.path.join(root, "paper", "Figure_Confusion_RETIRED.png"))

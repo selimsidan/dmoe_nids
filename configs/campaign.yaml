@@ -1,4 +1,4 @@
-# The paper campaign: 7 conditions x the seeds below. Units run seed-major
+# The paper campaign: 6 conditions x the seeds below. Units run seed-major
 # and, within a seed, in the order listed, so M's Stage A/B exist before the
 # conditions that reuse them. Any seed list works on the command line
 # (--seeds 3 4); completed units are skipped.
@@ -24,8 +24,6 @@ conditions:
   - id: B3
     config: baselines/B3_hard_routing_two_stage.yaml
     depends_on: {stage_a: M, stage_b: M}
-  - id: B4
-    config: baselines/B4_pooled_xgboost.yaml    # GPU (40 GB class); its tuning runs once before its first seed
   - id: A1
     config: ablations/A1_no_shared_encoder.yaml    # no encoder, so no Stage A; trains its own Stage B and C
   - id: A2

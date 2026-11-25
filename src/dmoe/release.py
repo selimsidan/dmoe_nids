@@ -7,6 +7,11 @@ exhibits. It never copies data, caches, checkpoints, bundles, per-row
 predictions or logs, and it rewrites any absolute path under OUTPUT_ROOT to a
 path relative to it.
 
+Both export only the conditions of the active campaign by default
+(``configs/campaign.yaml``): run folders, per-condition summary folders and
+per-condition paper figures of retired conditions that remain in OUTPUT_ROOT
+are skipped, never deleted.
+
 ``publish_hub`` uploads every run's bundle to the Hugging Face repository
 named in ``configs/base.yaml`` (``hub.repo_id``) under
 ``bundles/<condition>/seed<k>/`` plus a ``recommended.json`` pointer to M's
@@ -26,6 +31,33 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 COPY_SUFFIXES = {".csv", ".json", ".tex"}
 FIGURE_SUFFIXES = {".pdf", ".png"}
 NEVER_COPY_SUFFIXES = {".npz", ".npy", ".pt", ".safetensors", ".log", ".txt", ".tmp"}
+# Summary subfolders that hold one folder per condition.
+SUMMARY_CONDITION_FOLDERS = {"confusion", "training"}
+# Paper figures named after a condition.
+CONDITION_FIGURE_PREFIXES = ("Figure_Routing_", "Figure_Confusion_")
+
+
+def _conditions(conditions: list[str] | None) -> list[str]:
+    if conditions is not None:
+        return list(conditions)
+    from .training.campaign import load_campaign
+
+    return load_campaign().condition_ids
+
+
+def _file_condition(kind: str, relative: str) -> str | None:
+    """The condition a file belongs to (``kind`` is runs, summary or paper), or None if it is shared."""
+    parts = relative.split(os.sep)
+    if kind == "runs" and len(parts) > 1:
+        return parts[0]
+    if kind == "summary" and len(parts) > 2 and parts[0] in SUMMARY_CONDITION_FOLDERS:
+        return parts[1]
+    if kind == "paper" and len(parts) == 1:
+        stem = os.path.splitext(parts[0])[0]
+        for prefix in CONDITION_FIGURE_PREFIXES:
+            if stem.startswith(prefix):
+                return stem[len(prefix):]
+    return None
 
 
 def _relativize(text: str, output_root: str) -> str:
@@ -41,16 +73,18 @@ def _copy_text(source: str, target: str, output_root: str) -> None:
         handle.write(_relativize(text, output_root))
 
 
-def sync_results(output_root: str | None = None, repo_root: str = REPO_ROOT, *, figures: bool = True) -> list[str]:
-    """Copy shareable results into ``results/`` and ``paper/``; return the written paths."""
+def sync_results(output_root: str | None = None, repo_root: str = REPO_ROOT, *, figures: bool = True,
+                 conditions: list[str] | None = None) -> list[str]:
+    """Copy shareable results of ``conditions`` (default: the campaign's) into ``results/`` and ``paper/``."""
     root = output_root or paths.output_root()
+    selected = set(_conditions(conditions))
     written = []
     plan = [
-        (os.path.join(root, "runs"), os.path.join(repo_root, "results", "runs"), False),
-        (paths.summary_dir(root), os.path.join(repo_root, "results", "summary"), figures),
-        (paths.paper_dir(root), os.path.join(repo_root, "paper"), True),
+        ("runs", os.path.join(root, "runs"), os.path.join(repo_root, "results", "runs"), False),
+        ("summary", paths.summary_dir(root), os.path.join(repo_root, "results", "summary"), figures),
+        ("paper", paths.paper_dir(root), os.path.join(repo_root, "paper"), True),
     ]
-    for source_dir, target_dir, with_figures in plan:
+    for kind, source_dir, target_dir, with_figures in plan:
         if not os.path.isdir(source_dir):
             continue
         for directory, dirs, files in os.walk(source_dir):
@@ -62,7 +96,11 @@ def sync_results(output_root: str | None = None, repo_root: str = REPO_ROOT, *, 
                 if suffix not in COPY_SUFFIXES and not (with_figures and suffix in FIGURE_SUFFIXES):
                     continue
                 source = os.path.join(directory, name)
-                target = os.path.join(target_dir, os.path.relpath(source, source_dir))
+                relative = os.path.relpath(source, source_dir)
+                condition = _file_condition(kind, relative)
+                if condition is not None and condition not in selected:
+                    continue
+                target = os.path.join(target_dir, relative)
                 if suffix in COPY_SUFFIXES:
                     _copy_text(source, target, root)
                 else:
@@ -88,14 +126,18 @@ def recommended_pointer(output_root: str, condition: str = "M") -> dict:
             "val_macro_f1": float(row["val_macro_f1"])}
 
 
-def publish_hub(output_root: str | None = None, *, repo_id: str | None = None, execute: bool = False) -> list[str]:
+def publish_hub(output_root: str | None = None, *, repo_id: str | None = None, execute: bool = False,
+                conditions: list[str] | None = None) -> list[str]:
+    """Upload the bundles of ``conditions`` (default: the campaign's); dry run unless ``execute``."""
     from .hub import hub_repo_id
 
     root = output_root or paths.output_root()
     repo = repo_id or hub_repo_id()
     uploads = []
     runs = os.path.join(root, "runs")
-    for condition in sorted(os.listdir(runs)) if os.path.isdir(runs) else []:
+    for condition in _conditions(conditions):
+        if not os.path.isdir(os.path.join(runs, condition)):
+            continue
         for seed_dir in sorted(os.listdir(os.path.join(runs, condition))):
             bundle = os.path.join(runs, condition, seed_dir, "bundle")
             if os.path.isfile(os.path.join(bundle, "metadata.json")):

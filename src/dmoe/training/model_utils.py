@@ -13,8 +13,6 @@ moe_dataset_private_encoders_class_conditional      A3         class-conditional
 
 Gate and expert input widths come from the encoder's output width
 (``encoder.latent_dim``): 64 for the MLP encoder, 47 for A1's identity encoder.
-
-B4 (``pooled_xgboost``) is not a torch model; see ``xgboost_baseline``.
 """
 from __future__ import annotations
 

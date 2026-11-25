@@ -9,7 +9,6 @@ torch==2.13.0
 PyYAML==6.0.3
 matplotlib==3.11.2
 safetensors==0.8.0
-xgboost==3.4.1
 huggingface_hub==2.4.0
 pytest==9.1.1
 nbstripout==0.9.1

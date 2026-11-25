@@ -10,24 +10,20 @@ Resumable: runs with an up-to-date ``Bias_Tuning.json`` are skipped.
 
 Example:
   python scripts/bias_tuning.py                      # all conditions, seeds 0 to 4
-  python scripts/bias_tuning.py --only M B4 --seeds 0
+  python scripts/bias_tuning.py --only M B2 --seeds 0
 """
 from __future__ import annotations
 
 import argparse
 import os
 
-from dmoe.openmp import prepare_for_trees
+from _common import add_root_arguments, apply_roots
 
-prepare_for_trees()  # B4 bundles load XGBoost; before anything imports torch (see dmoe.openmp)
-
-from _common import add_root_arguments, apply_roots  # noqa: E402
-
-from dmoe.evaluation.bias_tuning import BIAS_FILE, tune_run, write_summary  # noqa: E402
-from dmoe.inference.bundle import load_bundle  # noqa: E402
-from dmoe.training.campaign import load_campaign, resolve_unit_config  # noqa: E402
-from dmoe.training.config import CAMPAIGN_CONFIG  # noqa: E402
-from dmoe.training.out_of_core_data import prepare_out_of_core_data  # noqa: E402
+from dmoe.evaluation.bias_tuning import BIAS_FILE, tune_run, write_summary
+from dmoe.inference.bundle import load_bundle
+from dmoe.training.campaign import load_campaign, resolve_unit_config
+from dmoe.training.config import CAMPAIGN_CONFIG
+from dmoe.training.out_of_core_data import prepare_out_of_core_data
 
 
 def main(argv: list[str] | None = None) -> None:

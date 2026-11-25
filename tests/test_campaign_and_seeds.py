@@ -13,15 +13,11 @@ from dmoe.training.config import CAMPAIGN_CONFIG, config_hash, load_yaml
 def test_units_are_seed_major_with_m_first(tmp_path):
     campaign = load_campaign()
     units = plan_units(campaign, seeds=[3, 4], output_root=str(tmp_path))
-    first = [(u.kind, u.seed, u.condition) for u in units][:8]
-    assert first == [("train", 3, "M"), ("train", 3, "B2"), ("train", 3, "B3"), ("tuning", 0, "B4"),
-                     ("train", 3, "B4"), ("train", 3, "A1"), ("train", 3, "A2"), ("train", 3, "A3")]
-    assert units[8].seed == 4 and units[8].condition == "M"
-    assert sum(u.kind == "tuning" for u in units) == 1  # B4 tunes once, whatever the seed list
+    assert [(u.seed, u.condition) for u in units] == [
+        (seed, condition) for seed in (3, 4) for condition in ("M", "B2", "B3", "A1", "A2", "A3")
+    ]
     b3 = next(u for u in units if u.condition == "B3" and u.seed == 3)
     assert b3.waits_for == ["M seed 3 Stage A", "M seed 3 Stage B"] and not b3.missing
-    b4 = next(u for u in units if u.condition == "B4" and u.seed == 3 and u.kind == "train")
-    assert b4.waits_for == ["B4 tuning"] and b4.stages == ["xgboost"] and not b4.missing
     a1 = next(u for u in units if u.condition == "A1" and u.seed == 3)
     assert a1.waits_for == [] and a1.missing == [] and a1.stages == ["B", "C"]  # no encoder, no Stage A, nothing from M
     assert missing_dependencies(campaign, "A1", 3, str(tmp_path)) == []
@@ -33,12 +29,11 @@ def test_missing_parent_is_named(tmp_path):
     assert units[0].status == "blocked"
     assert "M seed 3 Stage B" in units[0].describe()
     assert missing_dependencies(campaign, "A2", 3, str(tmp_path)) == ["M seed 3 Stage A", "M seed 3 Stage B"]
-    assert missing_dependencies(campaign, "B4", 3, str(tmp_path)) == ["B4 tuning"]
 
 
 def test_stage_reuse_per_condition():
     campaign = load_campaign()
-    expected = {"M": ["A", "B", "C"], "B2": ["B", "C"], "B3": ["C"], "B4": ["xgboost"],
+    expected = {"M": ["A", "B", "C"], "B2": ["B", "C"], "B3": ["C"],
                 "A1": ["B", "C"], "A2": ["C"], "A3": ["B", "C"]}
     from dmoe.training.campaign import condition_stages
 
@@ -49,10 +44,9 @@ def test_identity_encoder_removes_stage_a_and_rejects_a_stage_a_dependency():
     from dmoe.training.campaign import ConditionEntry
 
     entry = ConditionEntry("X", "x.yaml")
-    assert stages_for(entry, "moe_dataset_no_encoder_class_conditional", identity_encoder=True) == ["B", "C"]
+    assert stages_for(entry, identity_encoder=True) == ["B", "C"]
     with pytest.raises(ValueError, match="cannot depend on a Stage A"):
-        stages_for(ConditionEntry("X", "x.yaml", {"stage_a": "M"}),
-                   "moe_dataset_no_encoder_class_conditional", identity_encoder=True)
+        stages_for(ConditionEntry("X", "x.yaml", {"stage_a": "M"}), identity_encoder=True)
 
 
 def test_a1_runs_alone(tmp_path):
@@ -118,8 +112,7 @@ def test_completed_units_are_skipped(trained):
     status = {(u.condition, u.seed): u.status for u in units}
     assert all(status[(c, 0)] == "complete" for c in campaign.condition_ids)
     assert status[("M", 1)] == "complete"
-    assert status[("B2", 1)] == "pending" and status[("B4", 1)] == "pending"
-    assert next(u for u in units if u.kind == "tuning").status == "complete"
+    assert all(status[(c, 1)] == "pending" for c in campaign.condition_ids if c != "M")
     # A different setting (more epochs) is a different config, so nothing counts as done.
     changed = plan_units(campaign, ["M"], [0], output_root=trained["output"], overrides=[*FAST_OVERRIDES, "training.epochs_c=3"])
     assert changed[0].status != "complete"
@@ -139,7 +132,7 @@ def test_manifest_records_split_and_environment(trained):
 
 def test_all_runs_share_one_split(trained):
     signatures = set()
-    for condition in ("M", "B2", "B3", "B4", "A1", "A2", "A3"):
+    for condition in ("M", "B2", "B3", "A1", "A2", "A3"):
         manifest = json.load(open(os.path.join(trained["output"], "runs", condition, "seed0", "manifest.json")))
         signatures.add(json.dumps(manifest["split"]["signatures"], sort_keys=True))
     seed1 = json.load(open(os.path.join(trained["output"], "runs", "M", "seed1", "manifest.json")))
